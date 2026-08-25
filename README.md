@@ -35,7 +35,7 @@ AstrBot/data/plugins/daily_digest/
 
 然后重启 AstrBot 或在插件页点击「重载」。
 
-> 要求 **AstrBot >= 3.5.19**（推荐 4.x）。定时主动消息需要平台适配器支持主动发送（如 `aiocqhttp` / OneBot v11 支持；QQ 官方 API 平台不支持主动消息）。
+> 要求 **AstrBot 4.x**（本项目按 4.x 插件 API 开发；定时主动消息需要平台适配器支持主动发送，如 `aiocqhttp` / OneBot v11 支持，QQ 官方 API 平台不支持主动消息）。
 
 ## ⚙️ 配置说明
 

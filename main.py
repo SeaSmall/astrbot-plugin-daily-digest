@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import inspect
 import json
 import re
 import urllib.parse
@@ -23,9 +24,14 @@ from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 
 from astrbot.api import logger
-from astrbot.api.event import filter, AstrMessageEvent, MessageChain
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.message_components import Plain
 from astrbot.api.star import Context, Star
+
+try:
+    from astrbot.api.event import MessageChain
+except ImportError:  # 旧版本兼容
+    from astrbot.api.message_components import MessageChain
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -611,7 +617,7 @@ class DailyDigestPlugin(Star):
         for idx, chunk in enumerate(chunks):
             try:
                 chain = MessageChain().message(chunk)
-                ok = await self.context.send_message(umo, chain)
+                ok = await self._send_to_session(umo, chain)
                 if not ok:
                     logger.warning(
                         f"[daily_digest] 发送到 {umo} 失败：未找到对应平台"
@@ -620,6 +626,30 @@ class DailyDigestPlugin(Star):
                 logger.error(f"[daily_digest] 发送到 {umo} 失败: {e}")
             if idx < len(chunks) - 1:
                 await asyncio.sleep(0.8)
+
+    async def _send_to_session(self, umo: str, chain: MessageChain) -> bool:
+        """发送消息。兼容新旧两种 send_message 签名：
+        新（AstrBot 4.x）: send_message(session: str|MessageSesion, chain)
+        旧（AstrBot 3.x）: send_message(platform_name, chain, target_id, is_group=...)
+        """
+        ctx = self.context
+        try:
+            sig = inspect.signature(ctx.send_message)
+            positional = [
+                p
+                for p in sig.parameters.values()
+                if p.kind
+                in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            ]
+            if len(positional) >= 4:
+                parts = umo.split(":")
+                platform_name = parts[0] if parts else umo
+                target = parts[2] if len(parts) > 2 else ""
+                is_group = "group" in umo.lower() or len(parts) > 3
+                return bool(await ctx.send_message(platform_name, chain, target, is_group))
+        except Exception as e:
+            logger.debug(f"[daily_digest] 旧版 send_message 适配失败，改用新版调用: {e}")
+        return bool(await ctx.send_message(umo, chain))
 
     # ------------------------------------------------------------------ #
     # 工具方法
