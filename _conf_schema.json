@@ -1,0 +1,87 @@
+{
+  "send_cron": {
+    "type": "string",
+    "default": "0 8 * * *",
+    "description": "定时发送时间（标准 5 段 cron 表达式，默认每天 08:00。示例：30 7 * * 1-5 表示工作日 07:30）"
+  },
+  "weather_city": {
+    "type": "string",
+    "default": "北京",
+    "description": "天气城市（中文名，如：北京 / 上海 / 广州 / 深圳）"
+  },
+  "weather_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用天气板块"
+  },
+  "news_cn_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用「昨日国内新闻」板块"
+  },
+  "news_intl_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用「昨日国际新闻」板块"
+  },
+  "tech_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用「科技前沿」板块"
+  },
+  "medical_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用「医药前沿」板块"
+  },
+  "policy_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用「政策前沿」板块"
+  },
+  "max_items_per_section": {
+    "type": "int",
+    "default": 5,
+    "description": "每个新闻板块最多保留的条目数"
+  },
+  "ai_summary_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否用 AI 总结生成简报（关闭后使用模板格式直接推送，AI 不可用时也会自动降级为模板）"
+  },
+  "target_sessions": {
+    "type": "text",
+    "default": "",
+    "description": "指定推送会话（unified_msg_origin，每行一个，如 aiocqhttp:Group:123456789）。留空则自动推送给「所有用户」（数据库枚举 + 订阅用户）"
+  },
+  "feeds_cn": {
+    "type": "text",
+    "default": "http://www.people.com.cn/rss/politics.xml\nhttp://www.people.com.cn/rss/society.xml",
+    "description": "国内新闻 RSS 源（每行一个 URL）"
+  },
+  "feeds_intl": {
+    "type": "text",
+    "default": "http://www.people.com.cn/rss/world.xml\nhttps://www.chinadaily.com.cn/rss/china_rss.xml",
+    "description": "国际新闻 RSS 源（每行一个 URL）"
+  },
+  "feeds_tech": {
+    "type": "text",
+    "default": "https://www.ithome.com/rss/\nhttps://sspai.com/feed\nhttps://www.ifanr.com/feed\nhttps://www.geekpark.net/rss",
+    "description": "科技前沿 RSS 源（每行一个 URL）"
+  },
+  "feeds_medical": {
+    "type": "text",
+    "default": "http://www.people.com.cn/rss/health.xml\nhttps://www.who.int/rss-feeds/news-english.xml\nhttps://www.nature.com/nm.rss",
+    "description": "医药前沿 RSS 源（每行一个 URL）"
+  },
+  "feeds_policy": {
+    "type": "text",
+    "default": "http://www.people.com.cn/rss/politics.xml",
+    "description": "政策前沿 RSS 源（每行一个 URL，可加入 RSSHub 的 gov 路由等）"
+  },
+  "llm_prompt": {
+    "type": "text",
+    "default": "你是一名严谨、简洁的中文每日简报编辑。今天是 {date}。请根据下面的原始资讯生成【每日简报】，要求：\n1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿（仅输出实际有的板块）\n2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接\n3. 客观简洁、不夸张、不编造；总长度控制在 1200 字内\n原始资讯：\n{data}",
+    "description": "AI 总结提示词（{date} 为日期，{data} 为抓取到的原始资讯）"
+  }
+}
