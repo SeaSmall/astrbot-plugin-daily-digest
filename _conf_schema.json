@@ -6,13 +6,23 @@
   },
   "weather_city": {
     "type": "string",
-    "default": "北京",
-    "description": "天气城市（中文名，如：北京 / 上海 / 广州 / 深圳）"
+    "default": "上海",
+    "description": "天气城市，支持多城市：用换行 / 逗号 / 顿号分隔（如：上海、北京、广州），逐城市输出天气"
   },
   "weather_enabled": {
     "type": "bool",
     "default": true,
     "description": "是否启用天气板块"
+  },
+  "weather_cache_minutes": {
+    "type": "int",
+    "default": 30,
+    "description": "天气结果缓存时间（分钟）：缓存期内直接复用，避免反复请求 Open-Meteo"
+  },
+  "weather_interval_seconds": {
+    "type": "int",
+    "default": 3,
+    "description": "相邻两次 Open-Meteo 请求的最小间隔（秒）：防止触发限流（并发请求会自动排队等待）"
   },
   "news_cn_enabled": {
     "type": "bool",
@@ -38,6 +48,26 @@
     "type": "bool",
     "default": true,
     "description": "是否启用「政策前沿」板块"
+  },
+  "github_trending_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用「GitHub 日升榜」板块（近 N 天 star 增长最快的仓库 Top10，多源免 Key 降级抓取）"
+  },
+  "github_trending_days": {
+    "type": "int",
+    "default": 7,
+    "description": "GitHub 日升榜统计周期（天）：按近 N 天新建仓库筛选 / 标注涨幅（OSS Insight 与 GitHub Search 使用）"
+  },
+  "github_trending_count": {
+    "type": "int",
+    "default": 10,
+    "description": "GitHub 日升榜展示的仓库数量（Top N）"
+  },
+  "github_trending_min_stars": {
+    "type": "int",
+    "default": 0,
+    "description": "GitHub 日升榜最低 star 过滤（低于该 star 数的仓库不展示，0 为不过滤）"
   },
   "max_items_per_section": {
     "type": "int",
@@ -81,7 +111,7 @@
   },
   "llm_prompt": {
     "type": "text",
-    "default": "你是一名严谨、简洁的中文每日简报编辑。今天是 {date}。请根据下面的原始资讯生成【每日简报】，要求：\n1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿（仅输出实际有的板块）\n2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接\n3. 客观简洁、不夸张、不编造；总长度控制在 1200 字内\n原始资讯：\n{data}",
+    "default": "你是一名严谨、简洁的中文每日简报编辑。今天是 {date}。请根据下面的原始资讯生成【每日简报】，要求：\n1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（仅输出实际有的板块）\n2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接\n3. 客观简洁、不夸张、不编造；总长度控制在 1200 字内\n原始资讯：\n{data}",
     "description": "AI 总结提示词（{date} 为日期，{data} 为抓取到的原始资讯）"
   }
 }
