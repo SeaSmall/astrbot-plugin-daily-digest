@@ -1,12 +1,13 @@
 # AstrBot 每日简报插件（daily_digest）
 
-一个基于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的每日简报插件：定时抓取**天气**与**昨日新闻**（国内 / 国际）、**科技 / 医药 / 政策前沿**，由 AI 总结成一份简洁的中文简报，并**自动推送给所有用户**。
+一个基于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的每日简报插件：定时抓取**天气**（支持多城市）与**昨日新闻**（国内 / 国际）、**科技 / 医药 / 政策前沿**、**GitHub 日升榜**，由 AI 总结成一份简洁的中文简报，并**自动推送给所有用户**。
 
-> 数据源全部为**免费、免 API Key** 的公开服务（Open-Meteo 天气 API + 公开 RSS 源），插件本身零第三方依赖（仅使用 Python 标准库，AstrBot 自带 apscheduler）。
+> 数据源全部为**免费、免 API Key** 的公开服务（Open-Meteo 天气 API + 公开 RSS 源 + GitHub 趋势 API），插件本身零第三方依赖（仅使用 Python 标准库，AstrBot 自带 apscheduler）。
 
 ## ✨ 功能特性
 
-- 🌤️ **天气板块**：基于 [Open-Meteo](https://open-meteo.com/)（免费免 Key），支持中文城市名，自动地理编码，输出当前 / 今日 / 明日天气、温度、体感、湿度、风速、降水概率
+- 🌤️ **天气板块**：基于 [Open-Meteo](https://open-meteo.com/)（免费免 Key），支持**多城市**（换行 / 逗号 / 顿号分隔，逐城市输出），自动地理编码（7 天缓存），输出当前 / 今日 / 明日天气、温度、体感、湿度、风速、降水概率；内置**防高并发**（结果缓存、单飞锁、请求节流、失败隔离）
+- 🚀 **GitHub 日升榜**：近 N 天 star 增长最快的仓库 Top10（免费免 Key **多源降级**：OSS Insight → GitHub Search API → gitterapp），可配最低 star 过滤
 - 📰 **昨日新闻**：国内 / 国际分板块，自动按「昨日」过滤条目（不足时回退近 24 小时 / 最新）
 - 💻 **科技前沿** / 💊 **医药前沿** / 📜 **政策前沿**：各板块可独立开关
 - 🤖 **AI 总结**：调用 AstrBot 当前配置的 LLM 生成结构化简报；AI 不可用时**自动降级**为模板格式
@@ -44,13 +45,19 @@ AstrBot/data/plugins/daily_digest/
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `send_cron` | string | `0 8 * * *` | 定时发送时间（标准 5 段 cron，默认每天 08:00；如 `30 7 * * 1-5` 为工作日 07:30） |
-| `weather_city` | string | `北京` | 天气城市（中文名，如 北京 / 上海 / 广州） |
+| `weather_city` | string | `上海` | 天气城市，**支持多城市**：换行 / 逗号 / 顿号分隔（如 `上海、北京、广州`） |
 | `weather_enabled` | bool | `true` | 是否启用天气板块 |
+| `weather_cache_minutes` | int | `30` | 天气结果缓存时间（分钟），缓存期内直接复用 |
+| `weather_interval_seconds` | int | `3` | 相邻两次 Open-Meteo 请求最小间隔（秒），防限流 |
 | `news_cn_enabled` | bool | `true` | 是否启用「昨日国内」板块 |
 | `news_intl_enabled` | bool | `true` | 是否启用「昨日国际」板块 |
 | `tech_enabled` | bool | `true` | 是否启用「科技前沿」板块 |
 | `medical_enabled` | bool | `true` | 是否启用「医药前沿」板块 |
 | `policy_enabled` | bool | `true` | 是否启用「政策前沿」板块 |
+| `github_trending_enabled` | bool | `true` | 是否启用「GitHub 日升榜」板块（近 N 天 star 增长最快仓库 Top10） |
+| `github_trending_days` | int | `7` | GitHub 日升榜统计周期（天） |
+| `github_trending_count` | int | `10` | GitHub 日升榜展示仓库数（Top N） |
+| `github_trending_min_stars` | int | `0` | GitHub 日升榜最低 star 过滤（0 = 不过滤） |
 | `max_items_per_section` | int | `5` | 每个新闻板块最多保留的条目数 |
 | `ai_summary_enabled` | bool | `true` | 是否用 AI 总结（关闭或 AI 不可用时自动使用模板格式） |
 | `target_sessions` | text | 空 | 指定推送会话（unified_msg_origin，每行一个，如 `aiocqhttp:Group:123456789`）；**留空 = 推送给所有用户** |
@@ -67,6 +74,7 @@ AstrBot/data/plugins/daily_digest/
 | 科技前沿 | IT之家、少数派、爱范儿、极客公园（RSS） |
 | 医药前沿 | 人民网健康、WHO 新闻、Nature Medicine（RSS） |
 | 政策前沿 | 人民网时政（RSS） |
+| GitHub 日升榜 | [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [GitHub Search API](https://docs.github.com/rest/search) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，多源降级） |
 
 所有 RSS 源均为公开免费源。若个别源不可用，可在配置中替换，也可加入 [RSSHub](https://docs.rsshub.app/) 路由（如 `https://rsshub.app/gov/zhengce/zuixin` 等）以覆盖更多站点。
 
@@ -83,15 +91,20 @@ AstrBot/data/plugins/daily_digest/
 ```
 📰 每日简报 · 2026-08-25 星期二
 
-🌤️ 北京天气
-现在：晴，30°C（体感 33°C），湿度 60%，风速 12km/h
-今日：多云，26~35°C，降水概率 10%
+🌤️ 天气
+→【上海】现在：晴，30°C（体感 33°C），湿度 60%，风速 12km/h；今日：多云，26~35°C，降水概率 10%；明日：晴，25~33°C
+→【北京】现在：多云，28°C（体感 30°C），湿度 55%，风速 8km/h；今日：阴，22~29°C，降水概率 30%
 
 🇨🇳 昨日国内
 1. 标题一
    🔗 https://...
 2. 标题二
    🔗 https://...
+
+🚀 GitHub 日升榜
+1. openai/whisper ⭐1234（近7天+56）
+   🔗 https://github.com/openai/whisper
+2. ...
 
 💻 科技前沿
 ...
@@ -109,6 +122,19 @@ AstrBot/data/plugins/daily_digest/
 
 **Q：某个新闻源抓不到？**
 - 在插件配置中替换对应板块的 `feeds_*` 源，或更换网络环境（部分境外源需可访问外网）。
+
+**Q：GitHub 日升榜没显示？**
+- 三个数据源（OSS Insight / GitHub Search API / gitterapp）全部不可达时该板块会省略并在日志记录；
+- GitHub Search API 无鉴权限速 10 次/分钟，日报每天一次不会触发；
+- 可用 `github_trending_min_stars` 过滤低 star 仓库，用 `github_trending_days` 调整周期。
+
+**Q：多城市天气怎么配？**
+- 在 `weather_city` 用换行 / 逗号 / 顿号分隔多个城市（如 `上海、北京、广州`），逐城市输出；
+- 天气有 30 分钟结果缓存与 3 秒请求间隔（均可配），城市再多也不会打爆 Open-Meteo。
+
+## 📦 更新日志
+
+- [CHANGELOG.md](CHANGELOG.md)
 
 ## ⚠️ 免责声明
 
