@@ -17,6 +17,7 @@ import html
 import inspect
 import json
 import re
+import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -83,11 +84,19 @@ SECTIONS = [
     ("tech_enabled", "feeds_tech", "科技前沿", "💻"),
     ("medical_enabled", "feeds_medical", "医药前沿", "💊"),
     ("policy_enabled", "feeds_policy", "政策前沿", "📜"),
+    ("github_trending_enabled", "github_trending", "GitHub 日升榜", "🚀"),
 ]
+
+# GitHub 日升榜数据源（免费免 Key，多源降级）：
+# a) OSS Insight（trends API） -> b) GitHub Search API（官方） -> c) gitterapp
+GITHUB_TRENDING_SOURCES = ("ossinsight", "github_search", "gitterapp")
+
+# 天气：每日 Open-Meteo 调用次数上限（保险，防止误触发限流）
+WEATHER_DAILY_CALL_LIMIT = 120
 
 DEFAULT_PROMPT = """你是一名严谨、简洁的中文每日简报编辑。今天是 {date}。
 请根据下面的原始资讯生成【每日简报】，要求：
-1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿（仅输出实际有的板块）
+1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（仅输出实际有的板块）
 2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接
 3. 客观简洁、不夸张、不编造；总长度控制在 1200 字内
 原始资讯：
@@ -130,6 +139,11 @@ class DailyDigestPlugin(Star):
         self.config = config or {}
         self._fallback_sched = None
         self._cron_job_id = None
+        # 天气防高并发状态：每城市单飞锁 + 全局请求节流 + 每日调用计数
+        self._weather_locks: dict[str, asyncio.Lock] = {}
+        self._last_weather_call = 0.0
+        self._weather_call_day = ""
+        self._weather_call_count = 0
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -258,7 +272,10 @@ class DailyDigestPlugin(Star):
         for enabled_key, feed_key, _label, _emoji in SECTIONS:
             if not self._cfg_bool(enabled_key, True):
                 continue
-            items = await self._fetch_category(feed_key, max_items)
+            if feed_key == "github_trending":
+                items = await self._fetch_github_trending()
+            else:
+                items = await self._fetch_category(feed_key, max_items)
             if items:
                 sections[feed_key] = items
 
@@ -358,6 +375,140 @@ class DailyDigestPlugin(Star):
                 return urls
         return DEFAULT_FEEDS.get(feed_key, [])
 
+    # ------------------------------------------------------------------ #
+    # GitHub 日升榜（免费免 Key 多源降级）
+    # ------------------------------------------------------------------ #
+    async def _fetch_github_trending(self) -> list[dict]:
+        """近 N 天 star 增长最快的仓库 TopN（多源降级，全部失败则省略板块并记日志）。"""
+        days = max(1, self._cfg_int("github_trending_days", 7))
+        limit = max(1, self._cfg_int("github_trending_count", 10))
+        min_stars = max(0, self._cfg_int("github_trending_min_stars", 0))
+        for source in GITHUB_TRENDING_SOURCES:
+            try:
+                url = self._github_trending_url(source, days, limit)
+                data = json.loads(await asyncio.to_thread(self._http_get_bytes, url))
+                items = self._parse_trending_repos(data, days)
+                if min_stars > 0:
+                    items = [
+                        it for it in items if int(it.get("stars") or 0) >= min_stars
+                    ]
+                if items:
+                    return items[:limit]
+                logger.warning(f"[daily_digest] GitHub 日升榜源 {source} 返回空结果")
+            except Exception as e:
+                logger.warning(
+                    f"[daily_digest] GitHub 日升榜源 {source} 失败: {e}"
+                )
+        logger.warning("[daily_digest] GitHub 日升榜全部数据源失败，该板块省略")
+        return []
+
+    @staticmethod
+    def _github_trending_url(source: str, days: int, limit: int) -> str:
+        if source == "ossinsight":
+            return (
+                "https://api.ossinsight.io/v1/trends/repos/?period="
+                f"past_7_days&limit={limit}"
+            )
+        if source == "github_search":
+            since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            return (
+                "https://api.github.com/search/repositories?q="
+                f"created%3A%3E{since}&sort=stars&order=desc&per_page={limit}"
+            )
+        # gitterapp（since 固定 daily，与周期无关，展示周期用配置 days）
+        return "https://api.gitterapp.com/repositories/trending?since=daily"
+
+    @staticmethod
+    def _parse_trending_repos(data, days: int) -> list[dict]:
+        """容错解析三种 API 的仓库列表（dict 的 items/repos/results/data 或顶层 list）。"""
+        raw = DailyDigestPlugin._find_repo_list(data)
+        out: list[dict] = []
+        for obj in raw:
+            if not isinstance(obj, dict):
+                continue
+            name = (
+                obj.get("repo_name")
+                or obj.get("full_name")
+                or obj.get("name")
+                or ""
+            )
+            name = str(name).strip().lstrip("/")
+            if "/" not in name:
+                # gitterapp 等源把 author 与 name 分开给
+                author = str(obj.get("author") or "").strip().lstrip("@")
+                repo = str(obj.get("name") or "").strip()
+                if author and repo:
+                    name = f"{author}/{repo}"
+            if not name or "/" not in name:
+                continue
+            url = (
+                obj.get("html_url")
+                or obj.get("url")
+                or f"https://github.com/{name}"
+            )
+            total_raw = (
+                obj.get("current_total_stars")
+                or obj.get("currentTotalStars")
+                or obj.get("stargazers_count")
+                or obj.get("total_stars")
+            )
+            period_raw = (
+                obj.get("current_period_stars")
+                or obj.get("currentPeriodStars")
+                or obj.get("period_stars")
+                or obj.get("added_stars")
+                or obj.get("stars_today")
+            )
+            stars = DailyDigestPlugin._to_int(total_raw)
+            period = DailyDigestPlugin._to_int(period_raw)
+            if total_raw is None and obj.get("stars") is not None:
+                # 部分源只给 stars（=总数）
+                stars = DailyDigestPlugin._to_int(obj.get("stars"))
+            elif period_raw is None and obj.get("stars") is not None:
+                # OSS Insight：total_stars 为总数、stars 为周期增量
+                period = DailyDigestPlugin._to_int(obj.get("stars"))
+            desc = str(obj.get("description") or "").strip()
+            title = f"{name} ⭐{stars}（近{days}天+{period}）" if period else f"{name} ⭐{stars}"
+            out.append(
+                {
+                    "name": name,
+                    "title": title,
+                    "link": str(url).strip(),
+                    "description": desc,
+                    "stars": stars,
+                    "period_stars": period,
+                }
+            )
+        return out
+
+    @staticmethod
+    def _find_repo_list(data) -> list:
+        """从 dict 的 items/repos/results/data 或顶层 list 中找数组。"""
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            for key in ("items", "repos", "results"):
+                v = data.get(key)
+                if isinstance(v, list):
+                    return v
+            for key in ("data", "payload"):
+                v = data.get(key)
+                if isinstance(v, dict):
+                    for key2 in ("items", "repos", "results"):
+                        v2 = v.get(key2)
+                        if isinstance(v2, list):
+                            return v2
+                    if isinstance(v, list):
+                        return v
+        return []
+
+    @staticmethod
+    def _to_int(v) -> int:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return 0
+
     @staticmethod
     def _http_get_bytes(url: str, timeout: int = 15) -> bytes:
         req = urllib.request.Request(
@@ -427,31 +578,72 @@ class DailyDigestPlugin(Star):
         return hit + undated
 
     # ------------------------------------------------------------------ #
-    # 天气（Open-Meteo，免费免 Key）
+    # 天气（Open-Meteo，免费免 Key；多城市 + 防高并发）
+    #   - 天气结果 KV 缓存 weather_cache_minutes 分钟
+    #   - 地理编码结果 KV 缓存 7 天
+    #   - 每城市一把 asyncio 单飞锁（同城市并发去重）
+    #   - 全局请求间隔节流 weather_interval_seconds 秒 + 每日上限
+    #   - 失败隔离：单城市失败只在该城市输出「获取失败」
     # ------------------------------------------------------------------ #
-    async def _fetch_weather(self) -> str | None:
-        city = str(self.config.get("weather_city") or "北京").strip()
-        try:
-            geo_url = (
-                "https://geocoding-api.open-meteo.com/v1/search?"
-                + urllib.parse.urlencode(
-                    {"name": city, "count": 1, "language": "zh", "format": "json"}
-                )
-            )
-            geo = json.loads(await asyncio.to_thread(self._http_get_bytes, geo_url))
-            results = geo.get("results") or []
-            if not results:
-                return f"🌤️ 天气：未找到城市「{city}」"
-            loc = results[0]
-            lat, lon = loc["latitude"], loc["longitude"]
-            city_name = loc.get("name", city)
+    def _weather_cities(self) -> list[str]:
+        raw = str(self.config.get("weather_city") or "上海").strip()
+        parts = re.split(r"[\n,，、;；]+", raw)
+        return [p.strip() for p in parts if p.strip()] or ["上海"]
 
+    async def _fetch_weather(self) -> str | None:
+        cities = self._weather_cities()
+        if not cities:
+            return None
+        cache_minutes = self._cfg_int("weather_cache_minutes", 30)
+        try:
+            cache = (await self.get_kv_data("weather_cache", None)) or {}
+            if (
+                cache.get("cities") == cities
+                and time.time() - (cache.get("ts") or 0) < cache_minutes * 60
+                and cache.get("text")
+            ):
+                return cache["text"]
+        except Exception:
+            pass
+
+        lines = ["🌤️ 天气"]
+        ok = False
+        for city in cities:
+            try:
+                block = await self._fetch_city_weather(city)
+            except Exception as e:
+                logger.warning(f"[daily_digest] 天气获取失败（{city}）: {e}")
+                block = None
+            if block:
+                lines.append(block)
+                ok = True
+            else:
+                lines.append(f"→【{city}】获取失败")
+        if not ok:
+            return None  # 全部城市失败 -> 板块省略
+        text = "\n".join(lines)
+        try:
+            await self.put_kv_data(
+                "weather_cache", {"cities": cities, "ts": time.time(), "text": text}
+            )
+        except Exception:
+            pass
+        return text
+
+    async def _fetch_city_weather(self, city: str) -> str | None:
+        """单城市天气。失败抛异常或返回 None，由调用方做失败隔离。"""
+        lock = self._weather_locks.setdefault(city, asyncio.Lock())
+        async with lock:  # 单飞锁：同城市并发只发一个请求
+            loc = await self._geocode(city)
+            if loc is None:
+                return None
+            await self._weather_throttle()
             fc_url = (
                 "https://api.open-meteo.com/v1/forecast?"
                 + urllib.parse.urlencode(
                     {
-                        "latitude": lat,
-                        "longitude": lon,
+                        "latitude": loc["lat"],
+                        "longitude": loc["lon"],
                         "current": "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m",
                         "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset",
                         "timezone": "auto",
@@ -464,30 +656,76 @@ class DailyDigestPlugin(Star):
             daily = fc.get("daily") or {}
             times = daily.get("time") or []
 
-            lines = [f"🌤️ {city_name}天气"]
-            lines.append(
+            parts = [
                 f"现在：{self._wmo(cur.get('weather_code'))}，"
                 f"{cur.get('temperature_2m')}°C（体感 {cur.get('apparent_temperature')}°C），"
                 f"湿度 {cur.get('relative_humidity_2m')}%，"
                 f"风速 {cur.get('wind_speed_10m')}km/h"
-            )
+            ]
             if len(times) >= 1:
-                lines.append(
+                parts.append(
                     f"今日：{self._wmo(daily.get('weather_code', [None])[0])}，"
                     f"{daily.get('temperature_2m_min', [None])[0]}~"
                     f"{daily.get('temperature_2m_max', [None])[0]}°C，"
                     f"降水概率 {daily.get('precipitation_probability_max', [None])[0]}%"
                 )
             if len(times) >= 2:
-                lines.append(
+                parts.append(
                     f"明日：{self._wmo(daily.get('weather_code', [None])[1])}，"
                     f"{daily.get('temperature_2m_min', [None])[1]}~"
                     f"{daily.get('temperature_2m_max', [None])[1]}°C"
                 )
-            return "\n".join(lines)
-        except Exception as e:
-            logger.warning(f"[daily_digest] 天气获取失败: {e}")
+            return f"→【{loc.get('name', city)}】" + "；".join(parts)
+
+    async def _geocode(self, city: str) -> dict | None:
+        """地理编码（KV 缓存 7 天），返回 {"lat","lon","name"} 或 None。"""
+        try:
+            geo_cache = (await self.get_kv_data("geo_cache", None)) or {}
+        except Exception:
+            geo_cache = {}
+        entry = geo_cache.get(city)
+        if entry and time.time() - (entry.get("ts") or 0) < 7 * 86400:
+            return entry
+
+        await self._weather_throttle()
+        geo_url = (
+            "https://geocoding-api.open-meteo.com/v1/search?"
+            + urllib.parse.urlencode(
+                {"name": city, "count": 1, "language": "zh", "format": "json"}
+            )
+        )
+        geo = json.loads(await asyncio.to_thread(self._http_get_bytes, geo_url))
+        results = geo.get("results") or []
+        if not results:
             return None
+        loc = results[0]
+        entry = {
+            "lat": loc["latitude"],
+            "lon": loc["longitude"],
+            "name": loc.get("name", city),
+            "ts": time.time(),
+        }
+        try:
+            geo_cache[city] = entry
+            await self.put_kv_data("geo_cache", geo_cache)
+        except Exception:
+            pass
+        return entry
+
+    async def _weather_throttle(self) -> None:
+        """全局节流：相邻两次 Open-Meteo 调用间隔 >= interval 秒，并计入每日上限。"""
+        interval = max(0, self._cfg_int("weather_interval_seconds", 3))
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._weather_call_day != today:
+            self._weather_call_day = today
+            self._weather_call_count = 0
+        if self._weather_call_count >= WEATHER_DAILY_CALL_LIMIT:
+            raise RuntimeError("今日天气 API 调用次数已达上限")
+        wait = self._last_weather_call + interval - time.time()
+        if wait > 0:
+            await asyncio.sleep(wait)
+        self._last_weather_call = time.time()
+        self._weather_call_count += 1
 
     @staticmethod
     def _wmo(code) -> str:
