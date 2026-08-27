@@ -88,8 +88,8 @@ SECTIONS = [
 ]
 
 # GitHub 日升榜数据源（免费免 Key，多源降级）：
-# a) OSS Insight（trends API） -> b) GitHub Search API（官方） -> c) gitterapp
-GITHUB_TRENDING_SOURCES = ("ossinsight", "github_search", "gitterapp")
+# a) GitHub Search API（官方，最稳，无鉴权限速 10 次/分） -> b) OSS Insight（trends API） -> c) gitterapp
+GITHUB_TRENDING_SOURCES = ("github_search", "ossinsight", "gitterapp")
 
 # 天气：每日 Open-Meteo 调用次数上限（保险，防止误触发限流）
 WEATHER_DAILY_CALL_LIMIT = 120
@@ -174,39 +174,52 @@ class DailyDigestPlugin(Star):
     # ------------------------------------------------------------------ #
     async def _setup_scheduler(self) -> None:
         cron = str(self.config.get("send_cron") or "0 8 * * *").strip()
+        tz = str(self.config.get("timezone") or "Asia/Shanghai").strip()
         # 优先使用 AstrBot 内置 cron_manager（AstrBot 4.x）
         try:
             cm = getattr(self.context, "cron_manager", None)
             if cm is not None and hasattr(cm, "add_basic_job"):
-                job = await cm.add_basic_job(
-                    name="daily_digest",
-                    cron_expression=cron,
-                    handler=self._on_schedule,
-                    description="每日简报定时发送",
-                    enabled=True,
-                    persistent=False,
-                )
+                try:
+                    job = await cm.add_basic_job(
+                        name="daily_digest",
+                        cron_expression=cron,
+                        handler=self._on_schedule,
+                        description="每日简报定时发送",
+                        enabled=True,
+                        persistent=False,
+                        timezone=tz,
+                    )
+                except TypeError:
+                    # 旧版 cron_manager 不支持 timezone 参数
+                    job = await cm.add_basic_job(
+                        name="daily_digest",
+                        cron_expression=cron,
+                        handler=self._on_schedule,
+                        description="每日简报定时发送",
+                        enabled=True,
+                        persistent=False,
+                    )
                 self._cron_job_id = getattr(job, "job_id", None)
-                logger.info(f"[daily_digest] 已注册定时任务（cron_manager）: {cron}")
+                logger.info(f"[daily_digest] 已注册定时任务（cron_manager）: {cron}（时区 {tz}）")
                 return
         except Exception as e:
             logger.warning(
                 f"[daily_digest] cron_manager 注册失败，回退 APScheduler: {e}"
             )
-        # 回退：直接使用 APScheduler（AstrBot 自带依赖）
+        # 回退：直接使用 APScheduler（AstrBot 自带依赖，显式指定时区）
         try:
             from apscheduler.schedulers.asyncio import AsyncIOScheduler
             from apscheduler.triggers.cron import CronTrigger
 
-            self._fallback_sched = AsyncIOScheduler()
+            self._fallback_sched = AsyncIOScheduler(timezone=tz)
             self._fallback_sched.add_job(
                 self._on_schedule,
-                CronTrigger.from_crontab(cron),
+                CronTrigger.from_crontab(cron, timezone=tz),
                 id="daily_digest",
                 misfire_grace_time=60,
             )
             self._fallback_sched.start()
-            logger.info(f"[daily_digest] 已注册定时任务（APScheduler）: {cron}")
+            logger.info(f"[daily_digest] 已注册定时任务（APScheduler）: {cron}（时区 {tz}）")
         except Exception as e:
             logger.error(f"[daily_digest] 定时任务注册失败: {e}")
 

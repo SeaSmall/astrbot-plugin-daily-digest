@@ -4,6 +4,11 @@
     "default": "0 8 * * *",
     "description": "定时发送时间（标准 5 段 cron 表达式，默认每天 08:00。示例：30 7 * * 1-5 表示工作日 07:30）"
   },
+  "timezone": {
+    "type": "string",
+    "default": "Asia/Shanghai",
+    "description": "定时任务时区（IANA 时区名，如 Asia/Shanghai / UTC）。cron 表达式按此时区计算，避免默认 UTC 导致发送时间错位"
+  },
   "weather_city": {
     "type": "string",
     "default": "上海",

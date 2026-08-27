@@ -45,6 +45,7 @@ AstrBot/data/plugins/daily_digest/
 | 配置项 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `send_cron` | string | `0 8 * * *` | 定时发送时间（标准 5 段 cron，默认每天 08:00；如 `30 7 * * 1-5` 为工作日 07:30） |
+| `timezone` | string | `Asia/Shanghai` | 定时任务时区（IANA 时区名）。**必须与部署机器实际时区一致**，否则 cron 会在错误时间触发（如默认 UTC 时 `0 8 * * *` 会按 UTC 8 点跑） |
 | `weather_city` | string | `上海` | 天气城市，**支持多城市**：换行 / 逗号 / 顿号分隔（如 `上海、北京、广州`） |
 | `weather_enabled` | bool | `true` | 是否启用天气板块 |
 | `weather_cache_minutes` | int | `30` | 天气结果缓存时间（分钟），缓存期内直接复用 |
@@ -74,7 +75,7 @@ AstrBot/data/plugins/daily_digest/
 | 科技前沿 | IT之家、少数派、爱范儿、极客公园（RSS） |
 | 医药前沿 | 人民网健康、WHO 新闻、Nature Medicine（RSS） |
 | 政策前沿 | 人民网时政（RSS） |
-| GitHub 日升榜 | [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [GitHub Search API](https://docs.github.com/rest/search) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，多源降级） |
+| GitHub 日升榜 | [GitHub Search API](https://docs.github.com/rest/search)（官方，优先）→ [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，多源降级） |
 
 所有 RSS 源均为公开免费源。若个别源不可用，可在配置中替换，也可加入 [RSSHub](https://docs.rsshub.app/) 路由（如 `https://rsshub.app/gov/zhengce/zuixin` 等）以覆盖更多站点。
 
