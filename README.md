@@ -7,7 +7,7 @@
 ## ✨ 功能特性
 
 - 🌤️ **天气板块**：基于 [Open-Meteo](https://open-meteo.com/)（免费免 Key），支持**多城市**（换行 / 逗号 / 顿号分隔，逐城市输出），自动地理编码（7 天缓存），输出当前 / 今日 / 明日天气、温度、体感、湿度、风速、降水概率；内置**防高并发**（结果缓存、单飞锁、请求节流、失败隔离）
-- 🚀 **GitHub 日升榜**：近 N 天 star 增长最快的仓库 Top10（免费免 Key **多源降级**：OSS Insight → GitHub Search API → gitterapp），可配最低 star 过滤
+- 🚀 **GitHub 日升榜**：近 N 天 star 增长最快的仓库 Top10（免费免 Key **多源降级**：GitHub Search API 优先 → OSS Insight → gitterapp），可配最低 star 过滤
 - 📰 **昨日新闻**：国内 / 国际分板块，自动按「昨日」过滤条目（不足时回退近 24 小时 / 最新）
 - 💻 **科技前沿** / 💊 **医药前沿** / 📜 **政策前沿**：各板块可独立开关
 - 🤖 **AI 总结**：调用 AstrBot 当前配置的 LLM 生成结构化简报；AI 不可用时**自动降级**为模板格式
@@ -62,7 +62,7 @@ AstrBot/data/plugins/daily_digest/
 | `max_items_per_section` | int | `5` | 每个新闻板块最多保留的条目数 |
 | `ai_summary_enabled` | bool | `true` | 是否用 AI 总结（关闭或 AI 不可用时自动使用模板格式） |
 | `target_sessions` | text | 空 | 指定推送会话（unified_msg_origin，每行一个，如 `aiocqhttp:Group:123456789`）；**留空 = 推送给所有用户** |
-| `feeds_cn` / `feeds_intl` / `feeds_tech` / `feeds_medical` / `feeds_policy` | text | 见下 | 各板块 RSS 源 URL，每行一个，可自由增删 |
+| `feeds_cn` / `feeds_intl` / `feeds_tech` / `feeds_medical` / `feeds_policy` | text | 见下 | 各板块数据源，每行一个：**RSS URL**，或内置 JSON 源 `cctv:频道`（央视，如 `cctv:china` / `cctv:world` / `cctv:news`）、`tencent:hot`（腾讯热榜）、`baidu:hot`（百度热搜） |
 | `llm_prompt` | text | 见下 | AI 总结提示词（`{date}` 日期、`{data}` 原始资讯会自动替换） |
 
 ## 📡 默认数据源（全部免费）
@@ -70,14 +70,17 @@ AstrBot/data/plugins/daily_digest/
 | 板块 | 源 |
 | --- | --- |
 | 天气 | [Open-Meteo](https://open-meteo.com/) 地理编码 + 天气预报 API（免 Key） |
-| 昨日国内 | 人民网时政、人民网社会（RSS） |
-| 昨日国际 | 人民网国际、中国日报 China Daily（RSS） |
+| 昨日国内 | 央视新闻国内（`cctv:china`）、腾讯新闻热榜、百度热搜 |
+| 昨日国际 | 央视新闻国际（`cctv:world`）、中国日报世界频道（英文 RSS） |
 | 科技前沿 | IT之家、少数派、爱范儿、极客公园（RSS） |
-| 医药前沿 | 人民网健康、WHO 新闻、Nature Medicine（RSS） |
-| 政策前沿 | 人民网时政（RSS） |
-| GitHub 日升榜 | [GitHub Search API](https://docs.github.com/rest/search)（官方，优先）→ [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，多源降级） |
+| 医药前沿 | WHO 新闻、Nature Medicine（英文 RSS） |
+| 政策前沿 | 央视新闻要闻（`cctv:news`）、百度热搜 |
+| GitHub 日升榜 | [GitHub Search API](https://docs.github.com/rest/search)（官方，优先，30s 超时+重试）→ [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，多源降级） |
 
-所有 RSS 源均为公开免费源。若个别源不可用，可在配置中替换，也可加入 [RSSHub](https://docs.rsshub.app/) 路由（如 `https://rsshub.app/gov/zhengce/zuixin` 等）以覆盖更多站点。
+> **时效性说明**：插件内置**严格时效过滤**——只有「昨日 / 近 24 小时」的条目才会进入简报。
+> 人民网官方 RSS 已于 2025 年停更，默认源已替换为央视 / 腾讯 / 百度等实时源；
+> 若自行配置 RSS，停更源的陈旧内容会被自动过滤，不会再把旧闻当「昨日」推送。
+> 数据源均可按上面的语法在配置里自由增删（也可加入 [RSSHub](https://docs.rsshub.app/) 路由，如 `https://rsshub.app/gov/zhengce/zuixin`）。
 
 ## 🎮 指令
 
@@ -122,12 +125,16 @@ AstrBot/data/plugins/daily_digest/
 - 确认 AstrBot 已配置可用的大语言模型服务商，且 `ai_summary_enabled` 为开启。AI 调用失败会自动降级为模板格式推送。
 
 **Q：某个新闻源抓不到？**
-- 在插件配置中替换对应板块的 `feeds_*` 源，或更换网络环境（部分境外源需可访问外网）。
+- 在插件配置中替换对应板块的 `feeds_*` 源（RSS URL 或 `cctv:频道` / `tencent:hot` / `baidu:hot`），或更换网络环境（部分境外源需可访问外网）。
 
 **Q：GitHub 日升榜没显示？**
-- 三个数据源（OSS Insight / GitHub Search API / gitterapp）全部不可达时该板块会省略并在日志记录；
+- 三个数据源（GitHub Search API / OSS Insight / gitterapp）全部不可达时该板块会省略并在日志记录；
+- GitHub Search API 在部分国内网络较慢，插件已用 30 秒超时 + 自动重试 1 次，日志可见各源失败原因；
 - GitHub Search API 无鉴权限速 10 次/分钟，日报每天一次不会触发；
 - 可用 `github_trending_min_stars` 过滤低 star 仓库，用 `github_trending_days` 调整周期。
+
+**Q：为什么没有去年的旧闻了？**
+- 插件内置严格时效过滤：只有「昨日 / 近 24 小时」的条目才会进入简报。人民网 RSS 停更后其旧闻不再展示，已换成央视 / 腾讯 / 百度等实时源。
 
 **Q：多城市天气怎么配？**
 - 在 `weather_city` 用换行 / 逗号 / 顿号分隔多个城市（如 `上海、北京、广州`），逐城市输出；

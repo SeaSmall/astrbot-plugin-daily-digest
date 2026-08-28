@@ -91,28 +91,28 @@
   },
   "feeds_cn": {
     "type": "text",
-    "default": "http://www.people.com.cn/rss/politics.xml\nhttp://www.people.com.cn/rss/society.xml",
-    "description": "国内新闻 RSS 源（每行一个 URL）"
+    "default": "cctv:china\ntencent:hot\nbaidu:hot",
+    "description": "国内新闻源（每行一个：RSS URL，或 cctv:频道 / tencent:hot / baidu:hot）"
   },
   "feeds_intl": {
     "type": "text",
-    "default": "http://www.people.com.cn/rss/world.xml\nhttps://www.chinadaily.com.cn/rss/china_rss.xml",
-    "description": "国际新闻 RSS 源（每行一个 URL）"
+    "default": "cctv:world\nhttps://www.chinadaily.com.cn/rss/world_rss.xml",
+    "description": "国际新闻源（每行一个：RSS URL，或 cctv:频道）"
   },
   "feeds_tech": {
     "type": "text",
     "default": "https://www.ithome.com/rss/\nhttps://sspai.com/feed\nhttps://www.ifanr.com/feed\nhttps://www.geekpark.net/rss",
-    "description": "科技前沿 RSS 源（每行一个 URL）"
+    "description": "科技前沿源（每行一个 RSS URL）"
   },
   "feeds_medical": {
     "type": "text",
-    "default": "http://www.people.com.cn/rss/health.xml\nhttps://www.who.int/rss-feeds/news-english.xml\nhttps://www.nature.com/nm.rss",
-    "description": "医药前沿 RSS 源（每行一个 URL）"
+    "default": "https://www.who.int/rss-feeds/news-english.xml\nhttps://www.nature.com/nm.rss",
+    "description": "医药前沿源（每行一个 RSS URL）"
   },
   "feeds_policy": {
     "type": "text",
-    "default": "http://www.people.com.cn/rss/politics.xml",
-    "description": "政策前沿 RSS 源（每行一个 URL，可加入 RSSHub 的 gov 路由等）"
+    "default": "cctv:news\nbaidu:hot",
+    "description": "政策前沿源（每行一个：RSS URL，或 cctv:频道 / baidu:hot）"
   },
   "llm_prompt": {
     "type": "text",

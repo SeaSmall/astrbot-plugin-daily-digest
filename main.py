@@ -51,15 +51,23 @@ WMO_CODES = {
     95: "雷暴", 96: "雷暴伴冰雹", 99: "雷暴伴冰雹",
 }
 
-# 各板块默认 RSS 源（全部免费、免 Key；可在插件配置中自定义）
+# 各板块默认数据源（全部免费、免 Key；可在插件配置中自定义）
+# 支持两种条目：
+#   - URL            ：RSS/Atom 源
+#   - "cctv:频道"    ：央视新闻 JSONP（china/world/news 等）
+#   - "tencent:hot"  ：腾讯新闻热榜 JSON
+#   - "baidu:hot"    ：百度热搜 JSON
+# 注：人民网官方 RSS 已于 2025 年停更（内容停留在 2025-06-05），默认不再使用；
+#     若自行配置 RSS，务必确认源仍在更新（插件有严格时效过滤，陈旧条目不会显示）。
 DEFAULT_FEEDS = {
     "feeds_cn": [
-        "http://www.people.com.cn/rss/politics.xml",
-        "http://www.people.com.cn/rss/society.xml",
+        "cctv:china",
+        "tencent:hot",
+        "baidu:hot",
     ],
     "feeds_intl": [
-        "http://www.people.com.cn/rss/world.xml",
-        "https://www.chinadaily.com.cn/rss/china_rss.xml",
+        "cctv:world",
+        "https://www.chinadaily.com.cn/rss/world_rss.xml",
     ],
     "feeds_tech": [
         "https://www.ithome.com/rss/",
@@ -68,12 +76,12 @@ DEFAULT_FEEDS = {
         "https://www.geekpark.net/rss",
     ],
     "feeds_medical": [
-        "http://www.people.com.cn/rss/health.xml",
         "https://www.who.int/rss-feeds/news-english.xml",
         "https://www.nature.com/nm.rss",
     ],
     "feeds_policy": [
-        "http://www.people.com.cn/rss/politics.xml",
+        "cctv:news",
+        "baidu:hot",
     ],
 }
 
@@ -372,13 +380,114 @@ class DailyDigestPlugin(Star):
     # ------------------------------------------------------------------ #
     async def _fetch_category(self, feed_key: str, max_items: int) -> list[dict]:
         items: list[dict] = []
-        for url in self._feed_urls(feed_key):
+        for entry in self._feed_urls(feed_key):
             try:
-                data = await asyncio.to_thread(self._http_get_bytes, url)
-                items.extend(self._parse_feed(data))
+                if self._is_json_source(entry):
+                    items.extend(await self._fetch_json_source(entry, max_items))
+                else:
+                    data = await asyncio.to_thread(self._http_get_bytes, entry)
+                    items.extend(self._parse_feed(data))
             except Exception as e:
-                logger.warning(f"[daily_digest] 抓取 {feed_key} 源失败 {url}: {e}")
+                logger.warning(f"[daily_digest] 抓取 {feed_key} 源失败 {entry}: {e}")
         return self._filter_yesterday(items)[:max_items]
+
+    @staticmethod
+    def _is_json_source(entry: str) -> bool:
+        return entry.startswith("cctv:") or entry in ("tencent:hot", "baidu:hot")
+
+    async def _fetch_json_source(self, token: str, max_items: int) -> list[dict]:
+        """抓取免费中文 JSON 新闻源（央视 / 腾讯热榜 / 百度热搜）。
+        热榜类条目按「最新」处理（pub_date=当前时间），通过时效过滤。"""
+        now = datetime.now().astimezone()
+        if token.startswith("cctv:"):
+            channel = token.split(":", 1)[1].strip() or "news"
+            url = (
+                "https://news.cctv.com/2019/07/gaiban/cmsdatainterface/page/"
+                f"{channel}_1.jsonp"
+            )
+            text = (await asyncio.to_thread(self._http_get_bytes, url, 20)).decode(
+                "utf-8", "replace"
+            )
+            m = re.search(r"\(\s*(\{.*\})\s*\)\s*$", text, re.S)
+            payload = json.loads(m.group(1)) if m else json.loads(text)
+            out: list[dict] = []
+            for it in payload.get("data", {}).get("list") or []:
+                title = _strip_html(str(it.get("title") or it.get("brief") or ""))
+                if not title:
+                    continue
+                link = str(it.get("url") or "").strip()
+                pub = _parse_date(str(it.get("focus_date") or "")) or now
+                out.append(
+                    {
+                        "title": title,
+                        "link": link,
+                        "pub_date": pub,
+                        "summary": _strip_html(str(it.get("brief") or ""))[:200],
+                    }
+                )
+            return out
+        if token == "tencent:hot":
+            url = "https://r.inews.qq.com/gw/event/hot_ranking_list?page_size=30"
+            payload = json.loads(
+                (await asyncio.to_thread(self._http_get_bytes, url, 20)).decode(
+                    "utf-8", "replace"
+                )
+            )
+            out = []
+            for it in (payload.get("idlist") or [{}])[0].get("newslist") or []:
+                title = _strip_html(str(it.get("title") or ""))
+                if not title:
+                    continue
+                if "腾讯新闻用户最关注" in title:  # 过滤占位头条目
+                    continue
+                out.append(
+                    {
+                        "title": title,
+                        "link": "",
+                        "pub_date": now,
+                        "summary": "",
+                    }
+                )
+            return out
+        if token == "baidu:hot":
+            url = "https://top.baidu.com/api/board?platform=wise&tab=realtime"
+            payload = json.loads(
+                (await asyncio.to_thread(self._http_get_bytes, url, 20)).decode(
+                    "utf-8", "replace"
+                )
+            )
+            out = []
+            for it in self._walk_keyed_items(payload):
+                word = str(it.get("word") or it.get("query") or "").strip()
+                if not word:
+                    continue
+                link = str(it.get("url") or "").strip() or (
+                    "https://www.baidu.com/s?wd=" + urllib.parse.quote(word)
+                )
+                out.append(
+                    {
+                        "title": word,
+                        "link": link,
+                        "pub_date": now,
+                        "summary": str(it.get("desc") or "")[:200],
+                    }
+                )
+            return out
+        return []
+
+    @staticmethod
+    def _walk_keyed_items(node):
+        """递归收集含 word/query 键的条目（适配百度热搜等多层嵌套结构）。"""
+        out: list[dict] = []
+        if isinstance(node, dict):
+            if node.get("word") or node.get("query"):
+                out.append(node)
+            for v in node.values():
+                out.extend(DailyDigestPlugin._walk_keyed_items(v))
+        elif isinstance(node, list):
+            for v in node:
+                out.extend(DailyDigestPlugin._walk_keyed_items(v))
+        return out
 
     def _feed_urls(self, feed_key: str) -> list[str]:
         val = self.config.get(feed_key)
@@ -397,21 +506,27 @@ class DailyDigestPlugin(Star):
         limit = max(1, self._cfg_int("github_trending_count", 10))
         min_stars = max(0, self._cfg_int("github_trending_min_stars", 0))
         for source in GITHUB_TRENDING_SOURCES:
-            try:
-                url = self._github_trending_url(source, days, limit)
-                data = json.loads(await asyncio.to_thread(self._http_get_bytes, url))
-                items = self._parse_trending_repos(data, days)
-                if min_stars > 0:
-                    items = [
-                        it for it in items if int(it.get("stars") or 0) >= min_stars
-                    ]
-                if items:
-                    return items[:limit]
-                logger.warning(f"[daily_digest] GitHub 日升榜源 {source} 返回空结果")
-            except Exception as e:
-                logger.warning(
-                    f"[daily_digest] GitHub 日升榜源 {source} 失败: {e}"
-                )
+            # GitHub Search API 在国内网络较慢：放宽超时并重试一次
+            attempts = 2 if source == "github_search" else 1
+            timeout = 30 if source == "github_search" else 15
+            for attempt in range(1, attempts + 1):
+                try:
+                    url = self._github_trending_url(source, days, limit)
+                    data = json.loads(
+                        await asyncio.to_thread(self._http_get_bytes, url, timeout)
+                    )
+                    items = self._parse_trending_repos(data, days)
+                    if min_stars > 0:
+                        items = [
+                            it for it in items if int(it.get("stars") or 0) >= min_stars
+                        ]
+                    if items:
+                        return items[:limit]
+                    logger.warning(f"[daily_digest] GitHub 日升榜源 {source} 返回空结果")
+                except Exception as e:
+                    logger.warning(
+                        f"[daily_digest] GitHub 日升榜源 {source} 第 {attempt} 次尝试失败: {e}"
+                    )
         logger.warning("[daily_digest] GitHub 日升榜全部数据源失败，该板块省略")
         return []
 
@@ -562,7 +677,8 @@ class DailyDigestPlugin(Star):
         return items
 
     def _filter_yesterday(self, items: list[dict]) -> list[dict]:
-        """优先保留「昨日」条目；不足 2 条时回退到近 24 小时 / 最新条目。"""
+        """严格时效过滤：只保留「昨日」条目；不足时回退到近 24 小时。
+        注意：不回退到更早的条目——死源（如停更的 RSS）不会把陈旧内容当「昨日」展示。"""
         now = datetime.now().astimezone()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday_start = today_start - timedelta(days=1)
@@ -586,8 +702,6 @@ class DailyDigestPlugin(Star):
             hit24 = [it for it in dated if it["pub_date"] >= cutoff_24h]
             if len(hit24) > len(hit):
                 hit = hit24
-        if not hit:
-            hit = dated[:10]
         return hit + undated
 
     # ------------------------------------------------------------------ #
