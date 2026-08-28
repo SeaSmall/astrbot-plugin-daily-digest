@@ -16,6 +16,7 @@ import asyncio
 import html
 import inspect
 import json
+import os
 import re
 import time
 import urllib.parse
@@ -26,7 +27,7 @@ from email.utils import parsedate_to_datetime
 
 from astrbot.api import logger
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.message_components import Plain
+from astrbot.api.message_components import File, Plain
 from astrbot.api.star import Context, Star
 
 try:
@@ -95,18 +96,29 @@ SECTIONS = [
     ("github_trending_enabled", "github_trending", "GitHub 日升榜", "🚀"),
 ]
 
-# GitHub 日升榜数据源（免费免 Key，多源降级）：
-# a) GitHub Search API（官方，最稳，无鉴权限速 10 次/分） -> b) OSS Insight（trends API） -> c) gitterapp
-GITHUB_TRENDING_SOURCES = ("github_search", "ossinsight", "gitterapp")
+# GitHub 日升榜抓取尝试顺序（免费免 Key，依次降级，全部失败则省略板块）：
+# 1) GitHub Search API 新建仓库（created:>N 天，按 star 排序）= 真正的「日升榜」
+# 2) gh-proxy.com 镜像（api.github.com 被墙/超时时的国内代理）
+# 3) GitHub Search API 全站热门（stars 排序，如 freeCodeCamp/react 等知名项目）
+# 4) gh-proxy.com 镜像的同上查询
+# 5) OSS Insight / gitterapp（历史遗留，通常不可达，仅作最后兜底）
+GITHUB_TRENDING_SOURCES = (
+    "github_search_created",
+    "ghproxy_search_created",
+    "github_search_alltime",
+    "ghproxy_search_alltime",
+    "ossinsight",
+    "gitterapp",
+)
 
 # 天气：每日 Open-Meteo 调用次数上限（保险，防止误触发限流）
 WEATHER_DAILY_CALL_LIMIT = 120
 
 DEFAULT_PROMPT = """你是一名严谨、简洁的中文每日简报编辑。今天是 {date}。
 请根据下面的原始资讯生成【每日简报】，要求：
-1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（仅输出实际有的板块）
+1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（有数据的板块必须全部输出，不要遗漏任何板块）
 2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接
-3. 客观简洁、不夸张、不编造；总长度控制在 1200 字内
+3. 客观简洁、不夸张、不编造；总长度控制在 1800 字内
 原始资讯：
 {data}"""
 
@@ -277,8 +289,74 @@ class DailyDigestPlugin(Star):
         except Exception as e:
             logger.error(f"[daily_digest] 生成简报失败: {e}", exc_info=True)
             digest = f"⚠️ 每日简报生成失败：{e}"
+        await self._send_digest(digest, targets)
+
+    async def _send_digest(self, text: str, targets: list[str]) -> None:
+        """按 digest_send_mode 发送简报：
+        text  -> 纯文本分条发送
+        image -> 渲染为图片发送（AstrBot t2i）
+        file  -> 保存为 .md 文件发送（需平台支持本地文件）
+        auto  -> 短文本直接发文本；超过 digest_long_threshold 时自动转图片，失败回退 md 文件/文本
+        """
+        mode = str(self.config.get("digest_send_mode") or "auto").strip().lower()
+        threshold = self._cfg_int("digest_long_threshold", 2000)
+        if mode not in ("text", "image", "file", "auto"):
+            mode = "auto"
+        long_mode = "text"
+        if mode in ("image", "file"):
+            long_mode = mode
+        elif mode == "auto" and len(text) > threshold:
+            long_mode = "image"
+        if long_mode != "text":
+            ok = await self._send_long(text, targets, long_mode)
+            if ok:
+                return
         for umo in targets:
-            await self._send_text(umo, digest)
+            await self._send_text(umo, text)
+
+    async def _send_long(self, text: str, targets: list[str], mode: str) -> bool:
+        """长简报：优先渲染为图片；失败则保存为 .md 文件；都不行返回 False 回退文本。"""
+        # 1) 渲染图片（AstrBot text_to_image，全平台可发）
+        try:
+            url = await self.text_to_image(text, return_url=True)
+            if url:
+                for umo in targets:
+                    try:
+                        await self.context.send_message(
+                            umo, MessageChain().url_image(url)
+                        )
+                        await asyncio.sleep(0.3)
+                    except Exception as e:
+                        logger.error(f"[daily_digest] 图片发送到 {umo} 失败: {e}")
+                logger.info("[daily_digest] 简报已渲染为图片发送")
+                return True
+        except Exception as e:
+            logger.warning(f"[daily_digest] 简报渲染图片失败: {e}")
+        # 2) md 文件（部分平台支持本地文件）
+        try:
+            from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+            data_dir = get_astrbot_data_path()
+            temp_dir = os.path.join(data_dir, "temp")
+            os.makedirs(temp_dir, exist_ok=True)
+            fpath = os.path.join(
+                temp_dir,
+                f"daily_digest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+            )
+            with open(fpath, "w", encoding="utf-8") as f:
+                f.write(text)
+            for umo in targets:
+                try:
+                    chain = MessageChain(chain=[File(name="每日简报.md", file=fpath)])
+                    await self.context.send_message(umo, chain)
+                    await asyncio.sleep(0.3)
+                except Exception as e:
+                    logger.error(f"[daily_digest] 文件发送到 {umo} 失败: {e}")
+            logger.info("[daily_digest] 简报已作为 md 文件发送")
+            return True
+        except Exception as e:
+            logger.warning(f"[daily_digest] 发送 md 文件失败，回退文本: {e}")
+        return False
 
     async def _build_digest(self) -> str:
         weather = None
@@ -381,14 +459,23 @@ class DailyDigestPlugin(Star):
     async def _fetch_category(self, feed_key: str, max_items: int) -> list[dict]:
         items: list[dict] = []
         for entry in self._feed_urls(feed_key):
-            try:
-                if self._is_json_source(entry):
-                    items.extend(await self._fetch_json_source(entry, max_items))
-                else:
-                    data = await asyncio.to_thread(self._http_get_bytes, entry)
-                    items.extend(self._parse_feed(data))
-            except Exception as e:
-                logger.warning(f"[daily_digest] 抓取 {feed_key} 源失败 {entry}: {e}")
+            for attempt in (1, 2):  # 抖动网络重试一次
+                try:
+                    if self._is_json_source(entry):
+                        items.extend(await self._fetch_json_source(entry, max_items))
+                    else:
+                        data = await asyncio.to_thread(self._http_get_bytes, entry)
+                        items.extend(self._parse_feed(data))
+                    break
+                except Exception as e:
+                    if attempt == 1:
+                        logger.warning(
+                            f"[daily_digest] 抓取 {feed_key} 源失败 {entry}，重试一次: {e}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[daily_digest] 抓取 {feed_key} 源失败 {entry}: {e}"
+                        )
         return self._filter_yesterday(items)[:max_items]
 
     @staticmethod
@@ -513,27 +600,25 @@ class DailyDigestPlugin(Star):
         limit = max(1, self._cfg_int("github_trending_count", 10))
         min_stars = max(0, self._cfg_int("github_trending_min_stars", 0))
         for source in GITHUB_TRENDING_SOURCES:
-            # GitHub Search API 在国内网络较慢：放宽超时并重试一次
-            attempts = 2 if source == "github_search" else 1
-            timeout = 30 if source == "github_search" else 15
-            for attempt in range(1, attempts + 1):
-                try:
-                    url = self._github_trending_url(source, days, limit)
-                    data = json.loads(
-                        await asyncio.to_thread(self._http_get_bytes, url, timeout)
-                    )
-                    items = self._parse_trending_repos(data, days)
-                    if min_stars > 0:
-                        items = [
-                            it for it in items if int(it.get("stars") or 0) >= min_stars
-                        ]
-                    if items:
-                        return items[:limit]
-                    logger.warning(f"[daily_digest] GitHub 日升榜源 {source} 返回空结果")
-                except Exception as e:
-                    logger.warning(
-                        f"[daily_digest] GitHub 日升榜源 {source} 第 {attempt} 次尝试失败: {e}"
-                    )
+            try:
+                url = self._github_trending_url(source, days, limit)
+                timeout = 25
+                data = json.loads(
+                    await asyncio.to_thread(self._http_get_bytes, url, timeout)
+                )
+                items = self._parse_trending_repos(data, days)
+                if min_stars > 0:
+                    items = [
+                        it for it in items if int(it.get("stars") or 0) >= min_stars
+                    ]
+                if items:
+                    logger.info(f"[daily_digest] GitHub 日升榜命中数据源: {source}")
+                    return items[:limit]
+                logger.warning(f"[daily_digest] GitHub 日升榜源 {source} 返回空结果")
+            except Exception as e:
+                logger.warning(
+                    f"[daily_digest] GitHub 日升榜源 {source} 失败: {e}"
+                )
         logger.warning("[daily_digest] GitHub 日升榜全部数据源失败，该板块省略")
         return []
 
@@ -544,14 +629,19 @@ class DailyDigestPlugin(Star):
                 "https://api.ossinsight.io/v1/trends/repos/?period="
                 f"past_7_days&limit={limit}"
             )
-        if source == "github_search":
-            since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
-            return (
-                "https://api.github.com/search/repositories?q="
-                f"created%3A%3E{since}&sort=stars&order=desc&per_page={limit}"
-            )
-        # gitterapp（since 固定 daily，与周期无关，展示周期用配置 days）
-        return "https://api.gitterapp.com/repositories/trending?since=daily"
+        if source == "gitterapp":
+            return "https://api.gitterapp.com/repositories/trending?since=daily"
+        since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        if source.endswith("_created"):
+            q = f"created%3A%3E{since}"
+        else:  # _alltime：全站热门（stars 排序），国内网络下作为日升榜的降级数据
+            q = "stars%3A%3E1000"
+        base = (
+            "https://api.github.com/search/repositories"
+            if source.startswith("github_search")
+            else "https://gh-proxy.com/https://api.github.com/search/repositories"
+        )
+        return f"{base}?q={q}&sort=stars&order=desc&per_page={limit}"
 
     @staticmethod
     def _parse_trending_repos(data, days: int) -> list[dict]:
@@ -893,10 +983,19 @@ class DailyDigestPlugin(Star):
         prompt = (self.config.get("llm_prompt") or DEFAULT_PROMPT).replace(
             "{date}", datetime.now().strftime("%Y-%m-%d")
         ).replace("{data}", "\n".join(lines))
+        prompt = self._normalize_prompt(prompt)
         text = await self._llm_chat(prompt)
         if not text:
             raise RuntimeError("LLM 返回为空")
         return text
+
+    @staticmethod
+    def _normalize_prompt(prompt: str) -> str:
+        """规范化提示词：兼容旧版配置（1200 字限制导致 AI 漏板块/截断）。"""
+        return prompt.replace(
+            "总长度控制在 1200 字内",
+            "总长度控制在 1800 字内；有数据的板块必须全部输出，不要遗漏任何板块",
+        )
 
     async def _llm_chat(self, prompt: str) -> str:
         ctx = self.context
