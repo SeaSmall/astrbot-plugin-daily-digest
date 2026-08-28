@@ -118,7 +118,8 @@ DEFAULT_PROMPT = """你是一名严谨、简洁的中文每日简报编辑。今
 请根据下面的原始资讯生成【每日简报】，要求：
 1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（有数据的板块必须全部输出，不要遗漏任何板块）
 2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接
-3. 客观简洁、不夸张、不编造；总长度控制在 1800 字内
+3. 🚀 GitHub 日升榜的每个仓库要结合给出的描述，用一句话说明它「是什么、有什么功能」（如：XX —— 一个用于……的开源项目，提供……能力）
+4. 客观简洁、不夸张、不编造；总长度控制在 1800 字内
 原始资讯：
 {data}"""
 
@@ -693,13 +694,15 @@ class DailyDigestPlugin(Star):
                 # OSS Insight：total_stars 为总数、stars 为周期增量
                 period = DailyDigestPlugin._to_int(obj.get("stars"))
             desc = str(obj.get("description") or "").strip()
+            language = str(obj.get("language") or "").strip()
             title = f"{name} ⭐{stars}（近{days}天+{period}）" if period else f"{name} ⭐{stars}"
             out.append(
                 {
                     "name": name,
                     "title": title,
                     "link": str(url).strip(),
-                    "description": desc,
+                    "description": desc[:200],
+                    "language": language,
                     "stars": stars,
                     "period_stars": period,
                 }
@@ -974,6 +977,12 @@ class DailyDigestPlugin(Star):
             lines.append(f"## {label}")
             for it in items:
                 line = f"- {it['title']}"
+                detail = str(it.get("description") or it.get("summary") or "").strip()
+                if detail:
+                    line += f"：{detail[:200]}"
+                lang = str(it.get("language") or "").strip()
+                if lang:
+                    line += f"（语言：{lang}）"
                 if it.get("link"):
                     line += f"（{it['link']}）"
                 lines.append(line)
@@ -1091,6 +1100,15 @@ class DailyDigestPlugin(Star):
             lines.append(f"{emoji} {label}")
             for i, it in enumerate(items[:max_items], 1):
                 lines.append(f"{i}. {it['title']}")
+                detail = str(it.get("description") or it.get("summary") or "").strip()
+                lang = str(it.get("language") or "").strip()
+                tail_parts = []
+                if detail:
+                    tail_parts.append(detail[:120])
+                if lang:
+                    tail_parts.append(f"语言：{lang}")
+                if tail_parts:
+                    lines.append("   " + "；".join(tail_parts))
                 if it.get("link"):
                     lines.append(f"   🔗 {it['link']}")
         return "\n".join(lines)
