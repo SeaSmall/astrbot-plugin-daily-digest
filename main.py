@@ -494,6 +494,13 @@ class DailyDigestPlugin(Star):
         if val:
             urls = [u.strip() for u in str(val).splitlines() if u.strip()]
             if urls:
+                # 自动迁移：若某板块配置的源全部是已停更的人民网 RSS（2025-06 停更），
+                # 说明是旧版默认配置，自动切换到新的实时默认源
+                if all("people.com.cn" in u for u in urls):
+                    logger.info(
+                        f"[daily_digest] {feed_key} 仍在使用已停更的人民网源，已自动迁移到实时默认源"
+                    )
+                    return DEFAULT_FEEDS.get(feed_key, [])
                 return urls
         return DEFAULT_FEEDS.get(feed_key, [])
 
