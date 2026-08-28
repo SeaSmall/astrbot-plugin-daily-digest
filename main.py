@@ -991,11 +991,26 @@ class DailyDigestPlugin(Star):
 
     @staticmethod
     def _normalize_prompt(prompt: str) -> str:
-        """规范化提示词：兼容旧版配置（1200 字限制导致 AI 漏板块/截断）。"""
-        return prompt.replace(
+        """规范化提示词：兼容旧版配置。
+        - 旧版「1200 字内」升级为「1800 字内」；
+        - 旧版「（仅输出实际有的板块）」替换为「必须全部输出」；
+        - 末尾强制追加一条指令：{data} 里出现的每个板块（含 🚀 GitHub 日升榜 等）都必须输出，
+          防止旧提示词板块清单缺失时 AI 以「未列入板块」为由漏掉 GitHub 等板块。
+        """
+        p = prompt.replace(
             "总长度控制在 1200 字内",
-            "总长度控制在 1800 字内；有数据的板块必须全部输出，不要遗漏任何板块",
+            "总长度控制在 1800 字内",
         )
+        p = p.replace(
+            "（仅输出实际有的板块）",
+            "（有数据的板块必须全部输出，不要遗漏任何板块）",
+        )
+        p = p.rstrip() + (
+            "\n\n【强制要求】下方 {data} 中出现的每一个板块（包括但不限于："
+            "🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、"
+            "📜 政策前沿、🚀 GitHub 日升榜）都必须输出；只有某个板块在 {data} 中完全无数据时才可跳过。"
+        )
+        return p
 
     async def _llm_chat(self, prompt: str) -> str:
         ctx = self.context
