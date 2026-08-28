@@ -61,6 +61,8 @@ AstrBot/data/plugins/daily_digest/
 | `github_trending_min_stars` | int | `0` | GitHub 日升榜最低 star 过滤（0 = 不过滤） |
 | `max_items_per_section` | int | `5` | 每个新闻板块最多保留的条目数 |
 | `ai_summary_enabled` | bool | `true` | 是否用 AI 总结（关闭或 AI 不可用时自动使用模板格式） |
+| `digest_send_mode` | string | `auto` | 简报发送方式：`text` 纯文本分条 / `image` 渲染为图片 / `file` 保存为 .md 文件 / `auto` 短文本直接发、超长自动转图片（失败回退文件/文本） |
+| `digest_long_threshold` | int | `2000` | `auto` 模式触发转图片/文件的简报长度阈值（字符） |
 | `target_sessions` | text | 空 | 指定推送会话（unified_msg_origin，每行一个，如 `aiocqhttp:Group:123456789`）；**留空 = 推送给所有用户** |
 | `feeds_cn` / `feeds_intl` / `feeds_tech` / `feeds_medical` / `feeds_policy` | text | 见下 | 各板块数据源，每行一个：**RSS URL**，或内置 JSON 源 `cctv:频道`（央视，如 `cctv:china` / `cctv:world` / `cctv:news`）、`tencent:hot`（腾讯热榜）、`baidu:hot`（百度热搜） |
 | `llm_prompt` | text | 见下 | AI 总结提示词（`{date}` 日期、`{data}` 原始资讯会自动替换） |
@@ -75,7 +77,7 @@ AstrBot/data/plugins/daily_digest/
 | 科技前沿 | IT之家、少数派、爱范儿、极客公园（RSS） |
 | 医药前沿 | WHO 新闻、Nature Medicine（英文 RSS） |
 | 政策前沿 | 央视新闻要闻（`cctv:news`）、百度热搜 |
-| GitHub 日升榜 | [GitHub Search API](https://docs.github.com/rest/search)（官方，优先，30s 超时+重试）→ [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，多源降级） |
+| GitHub 日升榜 | [GitHub Search API](https://docs.github.com/rest/search)（官方，新建仓库日升榜优先）→ [gh-proxy.com](https://gh-proxy.com/) 代理镜像 → 全站热门（stars 排序）→ [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，6 路降级） |
 
 > **时效性说明**：插件内置**严格时效过滤**——只有「昨日 / 近 24 小时」的条目才会进入简报。
 > 人民网官方 RSS 已于 2025 年停更，默认源已替换为央视 / 腾讯 / 百度等实时源；
@@ -128,10 +130,13 @@ AstrBot/data/plugins/daily_digest/
 - 在插件配置中替换对应板块的 `feeds_*` 源（RSS URL 或 `cctv:频道` / `tencent:hot` / `baidu:hot`），或更换网络环境（部分境外源需可访问外网）。
 
 **Q：GitHub 日升榜没显示？**
-- 三个数据源（GitHub Search API / OSS Insight / gitterapp）全部不可达时该板块会省略并在日志记录；
-- GitHub Search API 在部分国内网络较慢，插件已用 30 秒超时 + 自动重试 1 次，日志可见各源失败原因；
+- 插件按 6 路降级依次尝试（GitHub Search 新建仓库 → gh-proxy 镜像 → 全站热门 → OSS Insight → gitterapp），全部失败才省略板块并在日志记录原因；
 - GitHub Search API 无鉴权限速 10 次/分钟，日报每天一次不会触发；
 - 可用 `github_trending_min_stars` 过滤低 star 仓库，用 `github_trending_days` 调整周期。
+
+**Q：简报太长被截断/漏板块？**
+- AI 总结已升级为 1800 字内并强制输出所有有数据的板块（旧版「1200 字内」提示词会自动规范化）；
+- 还想更完整可把 `digest_send_mode` 设为 `image`（渲染成图片）或 `file`（发 .md 文件），彻底绕开消息长度限制。
 
 **Q：为什么没有去年的旧闻了？**
 - 插件内置严格时效过滤：只有「昨日 / 近 24 小时」的条目才会进入简报。人民网 RSS 停更后其旧闻不再展示，已换成央视 / 腾讯 / 百度等实时源。
