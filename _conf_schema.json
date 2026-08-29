@@ -9,6 +9,11 @@
     "default": "Asia/Shanghai",
     "description": "定时任务时区（IANA 时区名，如 Asia/Shanghai / UTC）。cron 表达式按此时区计算，避免默认 UTC 导致发送时间错位"
   },
+  "send_deadline": {
+    "type": "string",
+    "default": "13:00",
+    "description": "补发截止时间（HH:MM）：到发送时间后若因休眠/网络未发出，会每 5 分钟兜底补发一次，直到此截止时间（避免深夜误发）"
+  },
   "weather_city": {
     "type": "string",
     "default": "上海",
