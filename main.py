@@ -160,6 +160,7 @@ class DailyDigestPlugin(Star):
         self.config = config or {}
         self._fallback_sched = None
         self._cron_job_id = None
+        self._cron_check_job_id = None
         # 天气防高并发状态：每城市单飞锁 + 全局请求节流 + 每日调用计数
         self._weather_locks: dict[str, asyncio.Lock] = {}
         self._last_weather_call = 0.0
@@ -176,11 +177,16 @@ class DailyDigestPlugin(Star):
     async def terminate(self) -> None:
         """插件被禁用/重载时调用：清理定时任务。"""
         try:
-            if self._cron_job_id:
-                cm = getattr(self.context, "cron_manager", None)
-                if cm is not None and hasattr(cm, "delete_job"):
-                    await cm.delete_job(self._cron_job_id)
-                    self._cron_job_id = None
+            cm = getattr(self.context, "cron_manager", None)
+            if cm is not None and hasattr(cm, "delete_job"):
+                for jid in (self._cron_job_id, self._cron_check_job_id):
+                    if jid:
+                        try:
+                            await cm.delete_job(jid)
+                        except Exception:
+                            pass
+                self._cron_job_id = None
+                self._cron_check_job_id = None
         except Exception as e:
             logger.warning(f"[daily_digest] 注销 cron 任务失败: {e}")
         try:
@@ -210,6 +216,15 @@ class DailyDigestPlugin(Star):
                         persistent=False,
                         timezone=tz,
                     )
+                    j2 = await cm.add_basic_job(
+                        name="daily_digest_check",
+                        cron_expression="*/5 * * * *",
+                        handler=self._on_check,
+                        description="每日简报兜底补发检查（每 5 分钟）",
+                        enabled=True,
+                        persistent=False,
+                        timezone=tz,
+                    )
                 except TypeError:
                     # 旧版 cron_manager 不支持 timezone 参数
                     job = await cm.add_basic_job(
@@ -220,8 +235,19 @@ class DailyDigestPlugin(Star):
                         enabled=True,
                         persistent=False,
                     )
+                    j2 = await cm.add_basic_job(
+                        name="daily_digest_check",
+                        cron_expression="*/5 * * * *",
+                        handler=self._on_check,
+                        description="每日简报兜底补发检查（每 5 分钟）",
+                        enabled=True,
+                        persistent=False,
+                    )
                 self._cron_job_id = getattr(job, "job_id", None)
-                logger.info(f"[daily_digest] 已注册定时任务（cron_manager）: {cron}（时区 {tz}）")
+                self._cron_check_job_id = getattr(j2, "job_id", None)
+                logger.info(
+                    f"[daily_digest] 已注册定时任务（cron_manager）: {cron} + 每5分钟兜底检查（时区 {tz}）"
+                )
                 return
         except Exception as e:
             logger.warning(
@@ -239,8 +265,16 @@ class DailyDigestPlugin(Star):
                 id="daily_digest",
                 misfire_grace_time=60,
             )
+            self._fallback_sched.add_job(
+                self._on_check,
+                CronTrigger.from_crontab("*/5 * * * *", timezone=tz),
+                id="daily_digest_check",
+                misfire_grace_time=60,
+            )
             self._fallback_sched.start()
-            logger.info(f"[daily_digest] 已注册定时任务（APScheduler）: {cron}（时区 {tz}）")
+            logger.info(
+                f"[daily_digest] 已注册定时任务（APScheduler）: {cron} + 每5分钟兜底检查（时区 {tz}）"
+            )
         except Exception as e:
             logger.error(f"[daily_digest] 定时任务注册失败: {e}")
 
@@ -267,19 +301,76 @@ class DailyDigestPlugin(Star):
         yield event.plain_result("✅ 已退订每日简报。")
 
     # ------------------------------------------------------------------ #
-    # 定时任务入口
+    # 定时任务入口（08:00 cron + 每 5 分钟兜底补发，每天最多发一次）
     # ------------------------------------------------------------------ #
     async def _on_schedule(self) -> None:
         """定时任务入口（cron_manager 以 handler() 方式调用，无需参数）"""
-        logger.info("[daily_digest] 定时任务触发，开始生成每日简报")
+        await self._maybe_send_digest()
+
+    async def _on_check(self) -> None:
+        """兜底检查（每 5 分钟）：错过 08:00（设备休眠/网络中断/cron misfire）时补发"""
+        await self._maybe_send_digest()
+
+    async def _maybe_send_digest(self) -> None:
+        """每天最多发送一次：到达发送时间且在补发窗口内则生成并发送，成功后记录已发日期。"""
         try:
+            now = self._now_local()
+            today = now.strftime("%Y-%m-%d")
+            try:
+                last = (await self.get_kv_data("last_digest_date", "")) or ""
+            except Exception:
+                last = ""
+            if last == today:
+                return
+            start_h, start_m = self._send_window_start()
+            deadline_h, deadline_m = self._send_deadline()
+            now_min = now.hour * 60 + now.minute
+            if now_min < start_h * 60 + start_m:
+                return  # 还没到发送时间
+            if now_min > deadline_h * 60 + deadline_m:
+                return  # 超过补发截止时间，今天放弃（避免深夜误发）
             targets = await self._collect_target_sessions()
             if not targets:
                 logger.warning("[daily_digest] 没有可推送的会话，跳过本次发送")
                 return
             await self._generate_and_send(targets)
+            try:
+                await self.put_kv_data("last_digest_date", today)
+            except Exception as e:
+                logger.debug(f"[daily_digest] 记录发送日期失败: {e}")
+            logger.info(f"[daily_digest] 今日简报已发送（{today}）")
         except Exception as e:
-            logger.error(f"[daily_digest] 定时任务执行失败: {e}", exc_info=True)
+            logger.error(f"[daily_digest] 定时发送失败: {e}", exc_info=True)
+
+    def _now_local(self) -> datetime:
+        """按配置时区取当前时间（zoneinfo 失败时回退系统本地时间）。"""
+        tz_name = str(self.config.get("timezone") or "Asia/Shanghai").strip()
+        try:
+            from zoneinfo import ZoneInfo
+
+            return datetime.now(ZoneInfo(tz_name))
+        except Exception:
+            return datetime.now().astimezone()
+
+    def _send_window_start(self) -> tuple[int, int]:
+        """从 send_cron 解析发送时刻 (hour, minute)。"""
+        cron = str(self.config.get("send_cron") or "0 8 * * *").strip()
+        parts = cron.split()
+        try:
+            minute = int(parts[0]) if parts[0].isdigit() else 0
+            hour = int(parts[1]) if parts[1].isdigit() else 8
+            return (hour, minute)
+        except Exception:
+            return (8, 0)
+
+    def _send_deadline(self) -> tuple[int, int]:
+        """补发截止时刻 (hour, minute)，默认 13:00。"""
+        dl = str(self.config.get("send_deadline") or "13:00").strip()
+        try:
+            h, m = dl.split(":")
+            return (int(h), int(m))
+        except Exception:
+            return (13, 0)
 
     # ------------------------------------------------------------------ #
     # 生成与发送
