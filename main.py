@@ -1110,7 +1110,63 @@ class DailyDigestPlugin(Star):
         text = await self._llm_chat(prompt)
         if not text:
             raise RuntimeError("LLM 返回为空")
+        if self._is_rejection(text):
+            # 内容安全拦截：用「仅标题+链接」的精简数据重试一次（去掉描述/摘要，降低触发概率）
+            logger.warning("[daily_digest] AI 返回被内容安全拦截，改用精简数据重试一次")
+            reduced = self._build_reduced_data(weather, sections)
+            if reduced:
+                prompt2 = (self.config.get("llm_prompt") or DEFAULT_PROMPT).replace(
+                    "{date}", datetime.now().strftime("%Y-%m-%d")
+                ).replace("{data}", reduced)
+                prompt2 = self._normalize_prompt(prompt2)
+                text2 = await self._llm_chat(prompt2)
+                if text2 and not self._is_rejection(text2):
+                    return text2
+            raise RuntimeError("LLM 连续被内容安全拦截，降级为模板日报")
         return text
+
+    @staticmethod
+    def _build_reduced_data(weather: str | None, sections: dict) -> str:
+        """精简数据：只保留标题+链接，每板块最多 3 条（降低被内容安全拦截的概率）。"""
+        lines: list[str] = []
+        if weather:
+            lines.append(weather)
+            lines.append("")
+        for _enabled_key, feed_key, label, _emoji in SECTIONS:
+            items = sections.get(feed_key) or []
+            if not items:
+                continue
+            lines.append(f"## {label}")
+            for it in items[:3]:
+                line = f"- {it['title']}"
+                if it.get("link"):
+                    line += f"（{it['link']}）"
+                lines.append(line)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _is_rejection(text: str) -> bool:
+        """检测 LLM 返回是否为内容安全拦截/拒绝（大小写不敏感）。"""
+        low = (text or "").lower()
+        markers = (
+            "high risk",
+            "was rejected",
+            "rejected because",
+            "content policy",
+            "moderation",
+            "risk control",
+            "safety check",
+            "safe check",
+            "the request was rejected",
+        )
+        if any(m in low for m in markers):
+            return True
+        # 中文安全拦截常见表述
+        cn_markers = (
+            "安全风险", "内容安全", "被拒绝", "违规", "敏感内容",
+            "不予处理", "拒绝回答", "无法满足该请求", "无法处理该请求",
+        )
+        return any(m in text for m in cn_markers)
 
     @staticmethod
     def _normalize_prompt(prompt: str) -> str:
