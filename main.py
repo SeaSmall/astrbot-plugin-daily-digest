@@ -407,21 +407,36 @@ class DailyDigestPlugin(Star):
             await self._send_text(umo, text)
 
     async def _send_long(self, text: str, targets: list[str], mode: str) -> bool:
-        """长简报：优先渲染为图片；失败则保存为 .md 文件；都不行返回 False 回退文本。"""
+        """长简报：优先渲染为图片；失败则保存为 .md 文件；都不行返回 False 回退文本。
+        注意：图片/文件发送时 QQ 官方等平台的媒体上传可能长时间重试（如
+        upload_group_and_c2c_image 5 次指数退避约 90s），这里加超时与「全目标失败回退」，
+        避免日报因图片上传失败而整体丢失。"""
         # 1) 渲染图片（AstrBot text_to_image，全平台可发）
         try:
             url = await self.text_to_image(text, return_url=True)
             if url:
+                ok_cnt = 0
                 for umo in targets:
                     try:
-                        await self.context.send_message(
-                            umo, MessageChain().url_image(url)
+                        await asyncio.wait_for(
+                            self.context.send_message(
+                                umo, MessageChain().url_image(url)
+                            ),
+                            timeout=90,
                         )
-                        await asyncio.sleep(0.3)
+                        ok_cnt += 1
                     except Exception as e:
                         logger.error(f"[daily_digest] 图片发送到 {umo} 失败: {e}")
-                logger.info("[daily_digest] 简报已渲染为图片发送")
-                return True
+                    await asyncio.sleep(0.3)
+                if ok_cnt == 0:
+                    logger.warning(
+                        "[daily_digest] 图片发送全部失败（可能为平台媒体上传问题），回退文本"
+                    )
+                else:
+                    logger.info(
+                        f"[daily_digest] 简报已渲染为图片发送（成功 {ok_cnt}/{len(targets)}）"
+                    )
+                    return True
         except Exception as e:
             logger.warning(f"[daily_digest] 简报渲染图片失败: {e}")
         # 2) md 文件（部分平台支持本地文件）
@@ -437,15 +452,23 @@ class DailyDigestPlugin(Star):
             )
             with open(fpath, "w", encoding="utf-8") as f:
                 f.write(text)
+            ok_cnt = 0
             for umo in targets:
                 try:
                     chain = MessageChain(chain=[File(name="每日简报.md", file=fpath)])
-                    await self.context.send_message(umo, chain)
-                    await asyncio.sleep(0.3)
+                    await asyncio.wait_for(
+                        self.context.send_message(umo, chain), timeout=90
+                    )
+                    ok_cnt += 1
                 except Exception as e:
                     logger.error(f"[daily_digest] 文件发送到 {umo} 失败: {e}")
-            logger.info("[daily_digest] 简报已作为 md 文件发送")
-            return True
+                await asyncio.sleep(0.3)
+            if ok_cnt:
+                logger.info(
+                    f"[daily_digest] 简报已作为 md 文件发送（成功 {ok_cnt}/{len(targets)}）"
+                )
+                return True
+            logger.warning("[daily_digest] md 文件发送全部失败，回退文本")
         except Exception as e:
             logger.warning(f"[daily_digest] 发送 md 文件失败，回退文本: {e}")
         return False
