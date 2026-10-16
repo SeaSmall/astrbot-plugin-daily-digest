@@ -158,3 +158,58 @@
     （去掉描述/摘要，降低触发概率）；
   - **模板兜底**：仍被拦则抛错，由 `_build_digest` 降级为**模板日报**（无 AI 也能正常发出），
     拦截文本永远不会再出现在日报里。
+
+## v1.2.0（2026-10-15）
+
+### ✨ 新增：政策前沿改接政府官方网站
+
+- 「政策前沿」板块默认数据源从 `cctv:news` + `baidu:hot`（新闻站二手转述）改为**政府官方网站一手来源**：
+  - `gov:zuixin` —— 中国政府网「最新政策」，含**中共中央 / 国务院政策文件**（如《中共中央 国务院关于发展新质生产力的意见》）；
+  - `ndrc:xwfb` —— 国家发改委「新闻发布」，含价格、区域、民营经济等宏观政策动态；
+  - `gov:yaowen` —— 中国政府网「要闻」推送。
+- **实现要点**：gov.cn 的政策栏目页面本身是 JS 空壳（`<ul id="list-1-ajax-id">` 由 jQuery 异步填充），
+  直接抓 HTML 拿不到条目，因此改为**抓同目录下的 JSON**：
+  - `https://www.gov.cn/zhengce/zuixin/ZUIXINZHENGCE.json`（字段 `TITLE` / `URL` / `DOCRELPUBTIME` / `SUB_TITLE`，1100+ 条全量按时间倒序）；
+  - `https://www.gov.cn/pushinfo/v150203/pushinfo.json`（字段 `title` / `link` / `pubDate` / `description`）；
+  - `https://www.ndrc.gov.cn/xwdt/xwfb/`（静态 HTML，正则解析 `<li><a title=...><span>日期</span>`，25 条/页）。
+- 新增 `GOV_SOURCES` / `GOV_HEADERS` 常量；`_http_get_bytes()` 支持自定义请求头（不再固定 RSS 的 `Accept`）。
+- **时效窗口放宽**：政策文件不是每天发布（实测近 30 天仅约 10 条），沿用「昨日」硬过滤会让政策板块
+  **绝大多数时候空白**。因此新增配置 `gov_policy_recent_days`（默认 **30**），
+  `_filter_yesterday(items, recent_days)` 支持按板块放宽；窗口内确实没有新政策时，
+  `_fetch_gov_source` 会退回最新几条并记录日志（`近 N 天无新政策，退回最新 M 条`）。
+  其余板块仍严格卡「昨日 / 近 24 小时」。
+- 条目新增 `source` 字段（`中国政府网` / `国家发改委`），便于简报标注出处。
+
+### ✨ 新增：图片与 .md 文件「两份都给」
+
+- 此前 `_send_long` 是**二选一**：图片发送成功就直接 `return True`，**永远不会再发 .md 文件**。
+- 现在拆分为 `_send_image()` 与 `_send_md()` 两个独立方法，`_send_digest()` 按模式调度：
+  - `both`（**新默认**）——同时发送渲染图片 + `.md` 文件；
+  - `auto` —— 短文本仍直接发文本，超阈值时按 `both` 发送；
+  - `image` —— 发图片，并默认同时补发 `.md`（由 `digest_also_send_md` 控制，可关）；
+  - `file` —— 只发 `.md` 文件；`text` —— 只发纯文本。
+- **容错**：图片与 md 任一路径成功即算送达；**两者都失败**才回退纯文本（保留 v1.1.7 的「全目标失败回退」语义）。
+- 新配置项：`digest_also_send_md`（bool，默认 `true`）。
+
+### 🐛 修复：渲染图片上出现「划去线」（删除线 / 多余下划线）
+
+- **根因**（AstrBot 渲染链路，两条路径都会出错）：
+  - 本地 PIL 渲染器 `astrbot/core/utils/t2i/local_strategy.py` 的行内样式表里，
+    `__(.*?)__` 被**同时注册**为 `BoldTextElement` 与 `UnderlineTextElement`（两条正则完全相同），
+    而 `MarkdownParser.parse` 对匹配结果**未做重叠去重**、按 start 排序后全部 append，
+    导致同一段文字被画两遍并多画一条线；`~~x~~` 则会真的在文字中部画一条删除线
+    （`strike_y = y + font_size // 2`）；
+  - 网络渲染路径（`template/base.html` + marked.js）会把 `~~x~~` 渲染成 `<del>`。
+- **修复**：新增长度函数 `_sanitize_for_image()`，在调用 `text_to_image()` **之前**剥掉
+  `~~删除线~~` / `__下划线__` / `**粗体**` / `*斜体*` / `_斜体_` 内联标记
+  （日报是资讯文本，不需要这些修饰），同时规避本地与网络两条渲染路径。
+  对 `a_b_c` 这类变量名风格的下划线做了边界保护，不会被误伤。
+
+### 🧪 测试
+
+- 新增本地桩测试（AstrBot API 全量打桩，不依赖真实 AstrBot 实例）：
+  - `_sanitize_for_image` 8 组用例（删除线 / 下划线 / 粗体 / 斜体 / 混合 / 变量名保护 / 无标记）**全部通过**；
+  - `_send_digest` 10 组场景断言**全部通过**：`both` → 图片+文件、`text` → 纯文本、`file` → 仅文件、
+    `image`+`digest_also_send_md` 开/关、`auto` 阈值上下、图片渲染失败时 md 仍送达、多目标各自成对发送。
+- 政府源联网实测：`gov:zuixin` 返回 10 条（近 30 天）、`gov:yaowen` 返回 10 条、`ndrc:xwfb` 返回 9 条；
+  `_fetch_category("feeds_policy", 5)` 端到端产出 5 条真实政府官网政策条目。

@@ -91,8 +91,13 @@
   },
   "digest_send_mode": {
     "type": "string",
-    "default": "auto",
-    "description": "简报发送方式：text=纯文本分条发送；image=渲染为图片发送；file=保存为 .md 文件发送（需平台支持本地文件）；auto=短文本直接发，超过阈值自动转图片（失败回退 md 文件/文本）"
+    "default": "both",
+    "description": "简报发送方式：text=纯文本分条发送；image=渲染为图片发送（并默认同时补发 .md 文件）；file=只发 .md 文件；both=同时发送图片和 .md 文件（推荐，图文+可存档）；auto=短文本直接发，超过阈值按 both 发送。任一路径全部失败会自动回退纯文本"
+  },
+  "digest_also_send_md": {
+    "type": "bool",
+    "default": true,
+    "description": "发图片时是否同时补发一份 .md 文件：图片方便手机阅读，md 方便保存/检索/二次加工（both 模式始终两份都发，此开关只影响 image / auto 模式）"
   },
   "digest_long_threshold": {
     "type": "int",
@@ -126,8 +131,13 @@
   },
   "feeds_policy": {
     "type": "text",
-    "default": "cctv:news\nbaidu:hot",
-    "description": "政策前沿源（每行一个：RSS URL，或 cctv:频道 / baidu:hot）"
+    "default": "gov:zuixin\nndrc:xwfb\ngov:yaowen",
+    "description": "政策前沿源：默认接政府官方网站 —— gov:zuixin（中国政府网「最新政策」，含中共中央/国务院政策文件）、ndrc:xwfb（国家发改委「新闻发布」）、gov:yaowen（中国政府网「要闻」）。也可填 RSS URL 或 cctv:频道 / baidu:hot"
+  },
+  "gov_policy_recent_days": {
+    "type": "int",
+    "default": 30,
+    "description": "政策板块的时效窗口（天）：政府官网政策文件不是每天都发，硬卡「昨日」会导致政策前沿经常空白，因此默认取最近 30 天内的政策（其它板块仍严格卡「昨日」）"
   },
   "llm_prompt": {
     "type": "text",

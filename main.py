@@ -40,6 +40,20 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+# 政府官方网站数据源（政策板块用；全部免费、免 Key）
+#   gov:zuixin  -> 中国政府网「最新政策」列表 JSON（含中共中央/国务院最新政策文件）
+#   gov:yaowen  -> 中国政府网「要闻」推送 JSON
+#   ndrc:xwfb   -> 国家发改委「新闻发布」列表页
+# 说明：gov.cn 的政策栏目页面本身是 JS 空壳，条目由同目录下的 JSON 填充，
+#      因此这里直接抓 JSON（ZUIXINZHENGCE.json / pushinfo.json），更稳更快。
+GOV_SOURCES = ("gov:zuixin", "gov:yaowen", "ndrc:xwfb")
+
+GOV_HEADERS = {
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "https://www.gov.cn/",
+}
+
 # WMO 天气代码 -> 中文描述（Open-Meteo）
 WMO_CODES = {
     0: "晴", 1: "基本晴朗", 2: "多云", 3: "阴",
@@ -53,11 +67,14 @@ WMO_CODES = {
 }
 
 # 各板块默认数据源（全部免费、免 Key；可在插件配置中自定义）
-# 支持两种条目：
-#   - URL            ：RSS/Atom 源
-#   - "cctv:频道"    ：央视新闻 JSONP（china/world/news 等）
-#   - "tencent:hot"  ：腾讯新闻热榜 JSON
-#   - "baidu:hot"    ：百度热搜 JSON
+# 支持四类条目：
+#   - URL             ：RSS/Atom 源
+#   - "cctv:频道"     ：央视新闻 JSONP（china/world/news 等）
+#   - "tencent:hot"   ：腾讯新闻热榜 JSON
+#   - "baidu:hot"     ：百度热搜 JSON
+#   - "gov:zuixin"    ：中国政府网「最新政策」（gov.cn 政府官网，政策板块专用）
+#   - "gov:yaowen"    ：中国政府网「要闻」（gov.cn 政府官网）
+#   - "ndrc:xwfb"     ：国家发改委「新闻发布」（ndrc.gov.cn 政府官网）
 # 注：人民网官方 RSS 已于 2025 年停更（内容停留在 2025-06-05），默认不再使用；
 #     若自行配置 RSS，务必确认源仍在更新（插件有严格时效过滤，陈旧条目不会显示）。
 DEFAULT_FEEDS = {
@@ -81,8 +98,9 @@ DEFAULT_FEEDS = {
         "https://www.nature.com/nm.rss",
     ],
     "feeds_policy": [
-        "cctv:news",
-        "baidu:hot",
+        "gov:zuixin",
+        "ndrc:xwfb",
+        "gov:yaowen",
     ],
 }
 
@@ -135,6 +153,32 @@ def _strip_html(text: str) -> str:
         return ""
     text = re.sub(r"<[^>]+>", " ", text)
     return html.unescape(re.sub(r"\s+", " ", text)).strip()
+
+
+def _sanitize_for_image(text: str) -> str:
+    """净化用于 t2i 渲染的文本，去掉会导致「划线」的内联 markdown 标记。
+
+    背景（AstrBot 两个渲染路径都会出错）：
+      1) 本地 PIL 渲染器 astrbot/core/utils/t2i/local_strategy.py 的行内样式表里
+         `__(.*?)__` 被同时注册为 BoldTextElement 与 UnderlineTextElement（两条正则
+         完全相同），匹配结果未做重叠去重，导致同一段文字被画两遍、多出一条线；
+         且 `~~x~~` 会真的在文字中间画一条删除线。
+      2) 网络渲染路径（template/base.html + marked.js）会把 `~~x~~` 渲染成 <del> 删除线。
+    日报是资讯文本，不需要删除线/下划线/斜体这些修饰，直接剥掉标记最稳。
+    """
+    if not text:
+        return ""
+    # 删除线：~~文字~~ -> 文字
+    text = re.sub(r"~~(.+?)~~", r"\1", text)
+    # 下划线 / 粗体：__文字__ -> 文字
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    # 粗体：**文字** -> 文字
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    # 斜体：*文字* -> 文字（先处理粗体，避免误伤）
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    # 单下划线斜体：_文字_ -> 文字
+    text = re.sub(r"(?<![A-Za-z0-9_])_(.+?)_(?![A-Za-z0-9_])", r"\1", text)
+    return text
 
 
 def _parse_date(text: str) -> datetime | None:
@@ -385,61 +429,90 @@ class DailyDigestPlugin(Star):
 
     async def _send_digest(self, text: str, targets: list[str]) -> None:
         """按 digest_send_mode 发送简报：
-        text  -> 纯文本分条发送
-        image -> 渲染为图片发送（AstrBot t2i）
-        file  -> 保存为 .md 文件发送（需平台支持本地文件）
-        auto  -> 短文本直接发文本；超过 digest_long_threshold 时自动转图片，失败回退 md 文件/文本
+        text   -> 纯文本分条发送
+        image  -> 渲染为图片发送（AstrBot t2i）
+        file   -> 保存为 .md 文件发送（需平台支持本地文件）
+        both   -> 同时发送图片 + .md 文件（图片失败则自动降级为「md + 文本」）
+        auto   -> 短文本直接发文本；超过 digest_long_threshold 时按 both 发送
+                  （即图片与 .md 都发；图片失败回退 md/文本）
+
+        注：只要发送方式包含图片，就**同时**补发一份 .md 文件——图片便于手机阅读，
+        md 文件便于保存/检索/二次加工，两者互补。
         """
         mode = str(self.config.get("digest_send_mode") or "auto").strip().lower()
         threshold = self._cfg_int("digest_long_threshold", 2000)
-        if mode not in ("text", "image", "file", "auto"):
+        if mode not in ("text", "image", "file", "both", "auto"):
             mode = "auto"
-        long_mode = "text"
-        if mode in ("image", "file"):
-            long_mode = mode
-        elif mode == "auto" and len(text) > threshold:
-            long_mode = "image"
-        if long_mode != "text":
-            ok = await self._send_long(text, targets, long_mode)
-            if ok:
-                return
-        for umo in targets:
-            await self._send_text(umo, text)
 
-    async def _send_long(self, text: str, targets: list[str], mode: str) -> bool:
-        """长简报：优先渲染为图片；失败则保存为 .md 文件；都不行返回 False 回退文本。
-        注意：图片/文件发送时 QQ 官方等平台的媒体上传可能长时间重试（如
+        send_image = False
+        send_md = False
+        if mode == "text":
+            pass
+        elif mode == "image":
+            send_image = True
+            send_md = bool(self._cfg_bool("digest_also_send_md", True))
+        elif mode == "file":
+            send_md = True
+        elif mode == "both":
+            send_image = True
+            send_md = True
+        elif mode == "auto":
+            if len(text) > threshold:
+                send_image = True
+                send_md = bool(self._cfg_bool("digest_also_send_md", True))
+
+        if not send_image and not send_md:
+            for umo in targets:
+                await self._send_text(umo, text)
+            return
+
+        img_ok = await self._send_image(text, targets) if send_image else False
+        md_ok = await self._send_md(text, targets) if send_md else False
+
+        # 图片与文件都失败 -> 回退纯文本，保证简报一定送达
+        if not img_ok and not md_ok:
+            logger.warning("[daily_digest] 图片与 md 文件均发送失败，回退纯文本")
+            for umo in targets:
+                await self._send_text(umo, text)
+
+    async def _send_image(self, text: str, targets: list[str]) -> bool:
+        """渲染为图片并发送；任一目标成功即返回 True。
+
+        注意：图片发送时 QQ 官方等平台的媒体上传可能长时间重试（如
         upload_group_and_c2c_image 5 次指数退避约 90s），这里加超时与「全目标失败回退」，
         避免日报因图片上传失败而整体丢失。"""
-        # 1) 渲染图片（AstrBot text_to_image，全平台可发）
         try:
-            url = await self.text_to_image(text, return_url=True)
-            if url:
-                ok_cnt = 0
-                for umo in targets:
-                    try:
-                        await asyncio.wait_for(
-                            self.context.send_message(
-                                umo, MessageChain().url_image(url)
-                            ),
-                            timeout=90,
-                        )
-                        ok_cnt += 1
-                    except Exception as e:
-                        logger.error(f"[daily_digest] 图片发送到 {umo} 失败: {e}")
-                    await asyncio.sleep(0.3)
-                if ok_cnt == 0:
-                    logger.warning(
-                        "[daily_digest] 图片发送全部失败（可能为平台媒体上传问题），回退文本"
+            render_text = _sanitize_for_image(text)
+            url = await self.text_to_image(render_text, return_url=True)
+            if not url:
+                logger.warning("[daily_digest] 简报渲染图片返回空 URL")
+                return False
+            ok_cnt = 0
+            for umo in targets:
+                try:
+                    await asyncio.wait_for(
+                        self.context.send_message(umo, MessageChain().url_image(url)),
+                        timeout=90,
                     )
-                else:
-                    logger.info(
-                        f"[daily_digest] 简报已渲染为图片发送（成功 {ok_cnt}/{len(targets)}）"
-                    )
-                    return True
+                    ok_cnt += 1
+                except Exception as e:
+                    logger.error(f"[daily_digest] 图片发送到 {umo} 失败: {e}")
+                await asyncio.sleep(0.3)
+            if ok_cnt == 0:
+                logger.warning(
+                    "[daily_digest] 图片发送全部失败（可能为平台媒体上传问题）"
+                )
+                return False
+            logger.info(
+                f"[daily_digest] 简报已渲染为图片发送（成功 {ok_cnt}/{len(targets)}）"
+            )
+            return True
         except Exception as e:
             logger.warning(f"[daily_digest] 简报渲染图片失败: {e}")
-        # 2) md 文件（部分平台支持本地文件）
+            return False
+
+    async def _send_md(self, text: str, targets: list[str]) -> bool:
+        """保存为 .md 文件并发送；任一目标成功即返回 True。"""
         try:
             from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
@@ -468,10 +541,11 @@ class DailyDigestPlugin(Star):
                     f"[daily_digest] 简报已作为 md 文件发送（成功 {ok_cnt}/{len(targets)}）"
                 )
                 return True
-            logger.warning("[daily_digest] md 文件发送全部失败，回退文本")
+            logger.warning("[daily_digest] md 文件发送全部失败")
+            return False
         except Exception as e:
-            logger.warning(f"[daily_digest] 发送 md 文件失败，回退文本: {e}")
-        return False
+            logger.warning(f"[daily_digest] 发送 md 文件失败: {e}")
+            return False
 
     async def _build_digest(self) -> str:
         weather = None
@@ -591,16 +665,28 @@ class DailyDigestPlugin(Star):
                         logger.warning(
                             f"[daily_digest] 抓取 {feed_key} 源失败 {entry}: {e}"
                         )
-        return self._filter_yesterday(items)[:max_items]
+        # 政策板块来自政府官网，发文频率低（可能数日才有一条），
+        # 因此放宽时效窗口，避免「政策前沿」整块空白；其余板块仍严格卡「昨日」。
+        recent_days = 0
+        if feed_key == "feeds_policy":
+            recent_days = max(1, self._cfg_int("gov_policy_recent_days", 30))
+        return self._filter_yesterday(items, recent_days)[:max_items]
 
     @staticmethod
     def _is_json_source(entry: str) -> bool:
-        return entry.startswith("cctv:") or entry in ("tencent:hot", "baidu:hot")
+        return (
+            entry.startswith("cctv:")
+            or entry in ("tencent:hot", "baidu:hot")
+            or entry in GOV_SOURCES
+        )
 
     async def _fetch_json_source(self, token: str, max_items: int) -> list[dict]:
-        """抓取免费中文 JSON 新闻源（央视 / 腾讯热榜 / 百度热搜）。
-        热榜类条目按「最新」处理（pub_date=当前时间），通过时效过滤。"""
+        """抓取免费中文 JSON 新闻源（央视 / 腾讯热榜 / 百度热搜 / 政府官网）。
+        热榜类条目按「最新」处理（pub_date=当前时间），通过时效过滤；
+        政府官网条目带真实发布日期，按真实日期参与时效过滤。"""
         now = datetime.now().astimezone()
+        if token in GOV_SOURCES:
+            return await self._fetch_gov_source(token, max_items)
         if token.startswith("cctv:"):
             channel = token.split(":", 1)[1].strip() or "news"
             url = (
@@ -676,6 +762,108 @@ class DailyDigestPlugin(Star):
                 )
             return out
         return []
+
+    async def _fetch_gov_source(self, token: str, max_items: int) -> list[dict]:
+        """政府官方网站源（政策板块）：
+        - gov:zuixin  中国政府网「最新政策」ZUIXINZHENGCE.json（字段 TITLE/URL/DOCRELPUBTIME）
+        - gov:yaowen  中国政府网「要闻」pushinfo.json（字段 title/link/pubDate/description）
+        - ndrc:xwfb   国家发改委「新闻发布」列表页（HTML 静态 li/a/span）
+        政策文件发布频率低（可能数日才有一条），所以这里不做「昨日」硬过滤，
+        而是取「最近 gov_policy_recent_days 天内」，交由上层时效过滤统一处理。
+        """
+        days = max(1, self._cfg_int("gov_policy_recent_days", 30))
+        now = datetime.now().astimezone()
+        cutoff = now - timedelta(days=days)
+        out: list[dict] = []
+
+        if token == "gov:zuixin":
+            url = "https://www.gov.cn/zhengce/zuixin/ZUIXINZHENGCE.json"
+            raw = await asyncio.to_thread(
+                self._http_get_bytes, url, 20, GOV_HEADERS
+            )
+            payload = json.loads(raw.decode("utf-8", "replace"))
+            for it in payload if isinstance(payload, list) else []:
+                title = _strip_html(str(it.get("TITLE") or ""))
+                if not title:
+                    continue
+                pub = _parse_date(str(it.get("DOCRELPUBTIME") or ""))
+                out.append(
+                    {
+                        "title": title,
+                        "link": str(it.get("URL") or "").strip(),
+                        "pub_date": pub,
+                        "summary": _strip_html(str(it.get("SUB_TITLE") or ""))[:200],
+                        "source": "中国政府网",
+                    }
+                )
+        elif token == "gov:yaowen":
+            url = "https://www.gov.cn/pushinfo/v150203/pushinfo.json"
+            raw = await asyncio.to_thread(
+                self._http_get_bytes, url, 20, GOV_HEADERS
+            )
+            payload = json.loads(raw.decode("utf-8", "replace"))
+            items = payload if isinstance(payload, list) else []
+            for it in items:
+                title = _strip_html(str(it.get("title") or ""))
+                if not title:
+                    continue
+                out.append(
+                    {
+                        "title": title,
+                        "link": str(it.get("link") or "").strip(),
+                        "pub_date": _parse_date(str(it.get("pubDate") or "")),
+                        "summary": _strip_html(str(it.get("description") or ""))[:200],
+                        "source": "中国政府网",
+                    }
+                )
+        elif token == "ndrc:xwfb":
+            base = "https://www.ndrc.gov.cn/xwdt/xwfb/"
+            raw = await asyncio.to_thread(
+                self._http_get_bytes, base, 20, GOV_HEADERS
+            )
+            html_text = raw.decode("utf-8", "replace")
+            for m in re.finditer(
+                r'<li[^>]*>\s*<a\s+href="([^"]+)"[^>]*title="([^"]*)"[^>]*>'
+                r'[^<]*</a>\s*<span[^>]*>([\d/]+)</span>',
+                html_text,
+            ):
+                href, title, date_s = m.group(1), m.group(2), m.group(3)
+                title = _strip_html(title)
+                if not title:
+                    continue
+                if href.startswith("//"):
+                    link = "https:" + href
+                elif href.startswith("http"):
+                    link = href
+                else:
+                    link = urllib.parse.urljoin(base, href)
+                out.append(
+                    {
+                        "title": title,
+                        "link": link,
+                        "pub_date": _parse_date(date_s.replace("/", "-")),
+                        "summary": "",
+                        "source": "国家发改委",
+                    }
+                )
+
+        # 政策文件更新慢：优先保留窗口内条目；窗口内为空则退回最新几条，
+        # 避免「政策前沿」板块因为近期无新政策而整块消失。
+        recent = []
+        for it in out:
+            d = it.get("pub_date")
+            if d is not None and d.tzinfo is None:
+                d = d.replace(tzinfo=now.tzinfo)
+                it["pub_date"] = d
+            if d is None or d >= cutoff:
+                recent.append(it)
+        if not recent:
+            recent = out[: max(1, max_items)]
+            if recent:
+                logger.info(
+                    f"[daily_digest] {token} 近 {days} 天无新政策，退回最新 {len(recent)} 条"
+                )
+        return recent[: max(1, max_items * 3)]
 
     @staticmethod
     def _walk_keyed_items(node):
@@ -852,14 +1040,14 @@ class DailyDigestPlugin(Star):
             return 0
 
     @staticmethod
-    def _http_get_bytes(url: str, timeout: int = 15) -> bytes:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept": "application/rss+xml, application/xml, text/xml, */*",
-            },
-        )
+    def _http_get_bytes(url: str, timeout: int = 15, headers: dict | None = None) -> bytes:
+        hdrs = {
+            "User-Agent": USER_AGENT,
+            "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        }
+        if headers:
+            hdrs.update(headers)
+        req = urllib.request.Request(url, headers=hdrs)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read()
 
@@ -890,13 +1078,17 @@ class DailyDigestPlugin(Star):
                 items.append(item)
         return items
 
-    def _filter_yesterday(self, items: list[dict]) -> list[dict]:
+    def _filter_yesterday(self, items: list[dict], recent_days: int = 0) -> list[dict]:
         """严格时效过滤：只保留「昨日」条目；不足时回退到近 24 小时。
+        recent_days > 0 时（政策等低频板块）放宽为「最近 N 天」，因为政策文件
+        不是每天都有，硬卡「昨日」会让整个板块经常空白。
         注意：不回退到更早的条目——死源（如停更的 RSS）不会把陈旧内容当「昨日」展示。"""
         now = datetime.now().astimezone()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday_start = today_start - timedelta(days=1)
         cutoff_24h = now - timedelta(hours=24)
+        if recent_days > 0:
+            yesterday_start = now - timedelta(days=recent_days)
 
         dated: list[dict] = []
         undated: list[dict] = []
@@ -912,7 +1104,7 @@ class DailyDigestPlugin(Star):
         dated.sort(key=lambda x: x["pub_date"], reverse=True)
 
         hit = [it for it in dated if yesterday_start <= it["pub_date"] < today_start]
-        if len(hit) < 2:
+        if recent_days <= 0 and len(hit) < 2:
             hit24 = [it for it in dated if it["pub_date"] >= cutoff_24h]
             if len(hit24) > len(hit):
                 hit = hit24

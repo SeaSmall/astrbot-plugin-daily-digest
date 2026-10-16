@@ -8,9 +8,10 @@
 
 - 🌤️ **天气板块**：基于 [Open-Meteo](https://open-meteo.com/)（免费免 Key），支持**多城市**（换行 / 逗号 / 顿号分隔，逐城市输出），自动地理编码（7 天缓存），输出当前 / 今日 / 明日天气、温度、体感、湿度、风速、降水概率；内置**防高并发**（结果缓存、单飞锁、请求节流、失败隔离）
 - 🚀 **GitHub 日升榜**：近 N 天 star 增长最快的仓库 Top10（免费免 Key **多源降级**：GitHub Search API 优先 → OSS Insight → gitterapp），可配最低 star 过滤
-- 📰 **昨日新闻**：国内 / 国际分板块，自动按「昨日」过滤条目（不足时回退近 24 小时 / 最新）
-- 💻 **科技前沿** / 💊 **医药前沿** / 📜 **政策前沿**：各板块可独立开关
+- 📰 **昨日新闻**：国内 / 国际分板块，自动按「昨日」过滤条目（不足时回退近 24 小时 / 最新）；政策板块按政府官网节奏放宽为最近 N 天
+- 💻 **科技前沿** / 💊 **医药前沿** / 📜 **政策前沿**：各板块可独立开关；**政策板块默认接政府官方网站**（中国政府网最新政策 / 国家发改委新闻发布 / 中国政府网要闻），并放宽时效窗口（默认 30 天，政策不是每天都有）
 - 🤖 **AI 总结**：调用 AstrBot 当前配置的 LLM 生成结构化简报；AI 不可用时**自动降级**为模板格式
+- 🖼️ **图片 + 存档双份**：默认 `both` 模式，同时发送**一张渲染图片**和**一份 `.md` 文件**（图片便于手机阅读，md 便于保存/检索/二次加工）；渲染前自动剥掉会导致划线错乱的 Markdown 内联标记
 - ⏰ **可配置发送时间**：标准 5 段 cron 表达式（默认每天 08:00）
 - 📢 **推送给所有用户**：自动枚举数据库中的全部会话（与 AstrBot 面板「会话管理」同源），也支持手动指定会话 / 订阅退订
 - 🧩 **可自定义**：每个板块的 RSS 源、条目数量、提示词均可配置
@@ -61,10 +62,12 @@ AstrBot/data/plugins/daily_digest/
 | `github_trending_min_stars` | int | `0` | GitHub 日升榜最低 star 过滤（0 = 不过滤） |
 | `max_items_per_section` | int | `5` | 每个新闻板块最多保留的条目数 |
 | `ai_summary_enabled` | bool | `true` | 是否用 AI 总结（关闭或 AI 不可用时自动使用模板格式） |
-| `digest_send_mode` | string | `auto` | 简报发送方式：`text` 纯文本分条 / `image` 渲染为图片 / `file` 保存为 .md 文件 / `auto` 短文本直接发、超长自动转图片（失败回退文件/文本） |
+| `digest_send_mode` | string | `both` | 简报发送方式：`text` 纯文本分条 / `image` 渲染为图片（默认同时补发 .md） / `file` 只发 .md 文件 / **`both` 同时发图片 + .md 文件（默认，推荐）** / `auto` 短文本直接发、超长按 `both` 发送。任一路径全部失败会自动回退纯文本 |
+| `digest_also_send_md` | bool | `true` | 发图片时是否同时补发一份 .md 文件（图片方便手机阅读，md 方便保存/检索/二次加工；`both` 模式始终两份都发，此开关只影响 `image` / `auto`） |
 | `digest_long_threshold` | int | `2000` | `auto` 模式触发转图片/文件的简报长度阈值（字符） |
+| `gov_policy_recent_days` | int | `30` | 政策板块时效窗口（天）。政府官网政策文件不是每天都有，硬卡「昨日」会让政策前沿经常空白，故默认取最近 30 天（其它板块仍严格卡「昨日」） |
 | `target_sessions` | text | 空 | 指定推送会话（unified_msg_origin，每行一个，如 `aiocqhttp:Group:123456789`）；**留空 = 推送给所有用户** |
-| `feeds_cn` / `feeds_intl` / `feeds_tech` / `feeds_medical` / `feeds_policy` | text | 见下 | 各板块数据源，每行一个：**RSS URL**，或内置 JSON 源 `cctv:频道`（央视，如 `cctv:china` / `cctv:world` / `cctv:news`）、`tencent:hot`（腾讯热榜）、`baidu:hot`（百度热搜） |
+| `feeds_cn` / `feeds_intl` / `feeds_tech` / `feeds_medical` / `feeds_policy` | text | 见下 | 各板块数据源，每行一个：**RSS URL**，或内置源 `cctv:频道`（央视，如 `cctv:china` / `cctv:world` / `cctv:news`）、`tencent:hot`（腾讯热榜）、`baidu:hot`（百度热搜）、**`gov:zuixin`（中国政府网最新政策）/ `gov:yaowen`（中国政府网要闻）/ `ndrc:xwfb`（国家发改委新闻发布）** |
 | `llm_prompt` | text | 见下 | AI 总结提示词（`{date}` 日期、`{data}` 原始资讯会自动替换） |
 
 ## 📡 默认数据源（全部免费）
@@ -76,13 +79,18 @@ AstrBot/data/plugins/daily_digest/
 | 昨日国际 | 央视新闻国际（`cctv:world`）、中国日报世界频道（英文 RSS） |
 | 科技前沿 | IT之家、少数派、爱范儿、极客公园（RSS） |
 | 医药前沿 | WHO 新闻、Nature Medicine（英文 RSS） |
-| 政策前沿 | 央视新闻要闻（`cctv:news`）、百度热搜 |
+| 政策前沿 | **政府官方网站**：[中国政府网·最新政策](https://www.gov.cn/zhengce/zuixin/)（`gov:zuixin`）、[国家发改委·新闻发布](https://www.ndrc.gov.cn/xwdt/xwfb/)（`ndrc:xwfb`）、[中国政府网·要闻](https://www.gov.cn/)（`gov:yaowen`） |
 | GitHub 日升榜 | [GitHub Search API](https://docs.github.com/rest/search)（官方，新建仓库日升榜优先）→ [gh-proxy.com](https://gh-proxy.com/) 代理镜像 → 全站热门（stars 排序）→ [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，6 路降级） |
 
 > **时效性说明**：插件内置**严格时效过滤**——只有「昨日 / 近 24 小时」的条目才会进入简报。
-> 人民网官方 RSS 已于 2025 年停更，默认源已替换为央视 / 腾讯 / 百度等实时源；
+> **政策板块例外**：政府官网的政策文件不是每天都有，硬卡「昨日」会让「政策前沿」经常空白，
+> 因此该板块默认按 `gov_policy_recent_days`（默认 30 天）取最近政策，窗口内没有新政策时退回最新几条。
+> 人民网官方 RSS 已于 2025 年停更，默认源已替换为央视 / 腾讯 / 百度 / 政府官网等实时源；
 > 若自行配置 RSS，停更源的陈旧内容会被自动过滤，不会再把旧闻当「昨日」推送。
-> 数据源均可按上面的语法在配置里自由增删（也可加入 [RSSHub](https://docs.rsshub.app/) 路由，如 `https://rsshub.app/gov/zhengce/zuixin`）。
+> 数据源均可按上面的语法在配置里自由增删（也可加入 [RSSHub](https://docs.rsshub.app/) 路由）。
+>
+> **排版说明**：简报渲染为图片前会自动剥掉 `~~删除线~~`、`__下划线__`、`**粗体**`、`*斜体*` 等内联标记，
+> 因为 AstrBot 的图片渲染链路（本地 PIL 渲染器与网络 marked.js 模板）会把 `~~` 画成穿字删除线、把 `__` 重复渲染成下划线。
 
 ## 🎮 指令
 
@@ -127,7 +135,16 @@ AstrBot/data/plugins/daily_digest/
 - 确认 AstrBot 已配置可用的大语言模型服务商，且 `ai_summary_enabled` 为开启。AI 调用失败会自动降级为模板格式推送。
 
 **Q：某个新闻源抓不到？**
-- 在插件配置中替换对应板块的 `feeds_*` 源（RSS URL 或 `cctv:频道` / `tencent:hot` / `baidu:hot`），或更换网络环境（部分境外源需可访问外网）。
+- 在插件配置中替换对应板块的 `feeds_*` 源（RSS URL 或 `cctv:频道` / `tencent:hot` / `baidu:hot` / `gov:zuixin` / `gov:yaowen` / `ndrc:xwfb`），或更换网络环境（部分境外源需可访问外网）。
+
+**Q：政策前沿为什么不是「昨日」的？**
+- 政策板块默认接政府官方网站，而政策文件不是每天发布，因此该板块按 `gov_policy_recent_days`（默认 30 天）取最近政策，而不是严格卡「昨日」——否则该板块绝大多数时候会是空白；
+- 窗口内确实没有新政策时，会退回展示最新几条并在日志记录（`近 N 天无新政策，退回最新 M 条`）；
+- 想改回严格时效，把 `gov_policy_recent_days` 设为 `1` 即可。
+
+**Q：图片上的文字被划掉了（有横线穿过）？**
+- 这是 AstrBot 图片渲染链路对 Markdown 内联标记的渲染问题：本地 PIL 渲染器把 `~~x~~` 画成真的删除线，且 `__x__` 被同时注册为粗体和下划线（两条正则相同、未去重）导致重复绘制；
+- 插件已在渲染前用 `_sanitize_for_image()` 剥掉 `~~` / `__` / `**` / `*` 标记，简报不会再出现划线；升级后仍出现请确认 `main.py` 已更新。
 
 **Q：GitHub 日升榜没显示？**
 - 插件按 6 路降级依次尝试（GitHub Search 新建仓库 → gh-proxy 镜像 → 全站热门 → OSS Insight → gitterapp），全部失败才省略板块并在日志记录原因；
@@ -136,7 +153,7 @@ AstrBot/data/plugins/daily_digest/
 
 **Q：简报太长被截断/漏板块？**
 - AI 总结已升级为 1800 字内并强制输出所有有数据的板块（旧版「1200 字内」提示词会自动规范化）；
-- 还想更完整可把 `digest_send_mode` 设为 `image`（渲染成图片）或 `file`（发 .md 文件），彻底绕开消息长度限制。
+- 默认 `digest_send_mode` 已是 `both`：**同时**发送一张渲染好的图片和一份 `.md` 文件——图片在手机上直接可读，`.md` 可保存/检索/二次加工，两者互补，且彻底绕开消息长度限制。
 
 **Q：为什么没有去年的旧闻了？**
 - 插件内置严格时效过滤：只有「昨日 / 近 24 小时」的条目才会进入简报。人民网 RSS 停更后其旧闻不再展示，已换成央视 / 腾讯 / 百度等实时源。
