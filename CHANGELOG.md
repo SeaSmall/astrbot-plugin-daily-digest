@@ -213,3 +213,21 @@
     `image`+`digest_also_send_md` 开/关、`auto` 阈值上下、图片渲染失败时 md 仍送达、多目标各自成对发送。
 - 政府源联网实测：`gov:zuixin` 返回 10 条（近 30 天）、`gov:yaowen` 返回 10 条、`ndrc:xwfb` 返回 9 条；
   `_fetch_category("feeds_policy", 5)` 端到端产出 5 条真实政府官网政策条目。
+
+## v1.2.1
+
+### 🐛 修复
+
+- **日报图片 100% 发送失败（日志刷 `not a valid url`）**：`text_to_image(return_url=True)`
+  在 AstrBot 网络渲染不可用/超时时会回退到**本地 PIL 渲染**，此时返回的是容器内文件路径
+  （如 `/AstrBot/data/temp/io_temp_img_1792221389_8477ba.jpg`）而不是 URL。旧代码一律
+  `MessageChain().url_image(...)`，平台侧 `Image.fromURL` 判为非法 → 图片全部失败后静默
+  退回纯文本，`digest_also_send_md` 的「一份图片 + 一份 md」实际永远只到 md。
+  新增模块级 `_image_chain()`，按 `http(s)://` / `file://` / `base64://` /
+  `data:image;base64,` / 本地路径 分流构造消息链。
+- **国际新闻源 404**：`feeds_intl` 默认的 `chinadaily.com.cn/rss/world_rss.xml` 已 404，
+  换成 `chinanews.com.cn/rss/world.xml`（实测 30 条）+ `cgtn.com/.../world.xml`（50 条）。
+
+### 🔧 其它
+
+- `metadata.yaml` 版本 → 1.2.1。

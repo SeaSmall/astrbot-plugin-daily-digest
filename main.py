@@ -85,7 +85,9 @@ DEFAULT_FEEDS = {
     ],
     "feeds_intl": [
         "cctv:world",
-        "https://www.chinadaily.com.cn/rss/world_rss.xml",
+        # chinadaily 的 world_rss.xml 已 404（实测），换成中国新闻网与 CGTN
+        "https://www.chinanews.com.cn/rss/world.xml",
+        "https://www.cgtn.com/subscribe/rss/section/world.xml",
     ],
     "feeds_tech": [
         "https://www.ithome.com/rss/",
@@ -179,6 +181,34 @@ def _sanitize_for_image(text: str) -> str:
     # 单下划线斜体：_文字_ -> 文字
     text = re.sub(r"(?<![A-Za-z0-9_])_(.+?)_(?![A-Za-z0-9_])", r"\1", text)
     return text
+
+
+def _image_chain(render_result) -> "MessageChain":
+    """把 text_to_image(return_url=True) 的返回值转成可发送的图片消息链。
+
+    AstrBot 的 render_t2i 先走网络渲染（成功时返回 https URL），网络不可用或超时时
+    回退到本地 PIL 渲染，此时返回的是**容器内的文件路径**
+    （例如 /AstrBot/data/temp/io_temp_img_1792221389_8477ba.jpg）。
+    旧代码一律 MessageChain().url_image(...)，本地路径会被 Image.fromURL 判为非法 URL
+    并抛 "not a valid url"，导致日报图片 100% 发送失败、静默退回纯文本。
+    """
+    if render_result is None:
+        raise ValueError("渲染结果为空")
+    r = str(render_result).strip()
+    if not r:
+        raise ValueError("渲染结果为空")
+    low = r.lower()
+    if low.startswith(("http://", "https://")):
+        return MessageChain().url_image(r)
+    if low.startswith("file://"):
+        return MessageChain().file_image(urllib.parse.unquote(r[len("file://"):]))
+    if low.startswith("base64://"):
+        return MessageChain().base64_image(r[len("base64://"):])
+    if low.startswith("data:image") and ";base64," in r:
+        return MessageChain().base64_image(r.split(";base64,", 1)[1])
+    if os.path.isfile(r):
+        return MessageChain().file_image(r)
+    return MessageChain().url_image(r)
 
 
 def _parse_date(text: str) -> datetime | None:
@@ -485,13 +515,20 @@ class DailyDigestPlugin(Star):
             render_text = _sanitize_for_image(text)
             url = await self.text_to_image(render_text, return_url=True)
             if not url:
-                logger.warning("[daily_digest] 简报渲染图片返回空 URL")
+                logger.warning("[daily_digest] 简报渲染图片返回空")
+                return False
+            try:
+                chain = _image_chain(url)
+            except Exception as e:
+                logger.error(
+                    f"[daily_digest] 渲染结果无法转成图片消息链: {e}（原始值={str(url)[:120]}）"
+                )
                 return False
             ok_cnt = 0
             for umo in targets:
                 try:
                     await asyncio.wait_for(
-                        self.context.send_message(umo, MessageChain().url_image(url)),
+                        self.context.send_message(umo, chain),
                         timeout=90,
                     )
                     ok_cnt += 1

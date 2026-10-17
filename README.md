@@ -76,7 +76,7 @@ AstrBot/data/plugins/daily_digest/
 | --- | --- |
 | 天气 | [Open-Meteo](https://open-meteo.com/) 地理编码 + 天气预报 API（免 Key） |
 | 昨日国内 | 央视新闻国内（`cctv:china`）、腾讯新闻热榜、百度热搜 |
-| 昨日国际 | 央视新闻国际（`cctv:world`）、中国日报世界频道（英文 RSS） |
+| 昨日国际 | 央视新闻国际（`cctv:world`）、中国新闻网世界频道、CGTN（原默认的中国日报 `world_rss.xml` 已 404，已替换） |
 | 科技前沿 | IT之家、少数派、爱范儿、极客公园（RSS） |
 | 医药前沿 | WHO 新闻、Nature Medicine（英文 RSS） |
 | 政策前沿 | **政府官方网站**：[中国政府网·最新政策](https://www.gov.cn/zhengce/zuixin/)（`gov:zuixin`）、[国家发改委·新闻发布](https://www.ndrc.gov.cn/xwdt/xwfb/)（`ndrc:xwfb`）、[中国政府网·要闻](https://www.gov.cn/)（`gov:yaowen`） |

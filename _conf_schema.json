@@ -116,8 +116,8 @@
   },
   "feeds_intl": {
     "type": "text",
-    "default": "cctv:world\nhttps://www.chinadaily.com.cn/rss/world_rss.xml",
-    "description": "国际新闻源（每行一个：RSS URL，或 cctv:频道）"
+    "default": "cctv:world\nhttps://www.chinanews.com.cn/rss/world.xml\nhttps://www.cgtn.com/subscribe/rss/section/world.xml",
+    "description": "国际新闻源（每行一个：RSS URL，或 cctv:频道）。原 chinadaily 的 world_rss.xml 已 404，默认换成中国新闻网 + CGTN"
   },
   "feeds_tech": {
     "type": "text",
