@@ -2,7 +2,7 @@ name: daily_digest
 display_name: 每日简报
 desc: 每日简报：天气 + 昨日国内/国际新闻 + 科技/医药/政策前沿（政策接政府官方网站）、GitHub 日升榜，AI 总结后同时推送图片与 .md 文件
 short_desc: 每日简报（天气/新闻/科技/医药/政府官网政策、GitHub 日升榜；图片+md 双份）
-version: 1.2.1
+version: 1.2.2
 author: SeaSmall
 repo: https://github.com/SeaSmall/astrbot-plugin-daily-digest
 license: MIT

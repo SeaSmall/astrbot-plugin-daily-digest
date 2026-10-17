@@ -63,6 +63,7 @@ AstrBot/data/plugins/daily_digest/
 | `max_items_per_section` | int | `5` | 每个新闻板块最多保留的条目数 |
 | `ai_summary_enabled` | bool | `true` | 是否用 AI 总结（关闭或 AI 不可用时自动使用模板格式） |
 | `digest_send_mode` | string | `both` | 简报发送方式：`text` 纯文本分条 / `image` 渲染为图片（默认同时补发 .md） / `file` 只发 .md 文件 / **`both` 同时发图片 + .md 文件（默认，推荐）** / `auto` 短文本直接发、超长按 `both` 发送。任一路径全部失败会自动回退纯文本 |
+| （防重复） | — | 内置 | 08:00 正点任务与每 5 分钟兜底检查会同时触发，靠 `asyncio.Lock` + 「先进锁再把今天的日期写进 KV」的先占位策略保证**一天只发一次**；生成/发送失败会回滚占位，当天仍可补发 |
 | `digest_also_send_md` | bool | `true` | 发图片时是否同时补发一份 .md 文件（图片方便手机阅读，md 方便保存/检索/二次加工；`both` 模式始终两份都发，此开关只影响 `image` / `auto`） |
 | `digest_long_threshold` | int | `2000` | `auto` 模式触发转图片/文件的简报长度阈值（字符） |
 | `gov_policy_recent_days` | int | `30` | 政策板块时效窗口（天）。政府官网政策文件不是每天都有，硬卡「昨日」会让政策前沿经常空白，故默认取最近 30 天（其它板块仍严格卡「昨日」） |

@@ -240,6 +240,9 @@ class DailyDigestPlugin(Star):
         self._last_weather_call = 0.0
         self._weather_call_day = ""
         self._weather_call_count = 0
+        # 发送防重：08:00 定时任务与 5 分钟兜底检查会同时触发，
+        # 生成一份简报要 1~2 分钟，旧写法两个协程都会通过「今天没发过」的检查 -> 一天发两遍
+        self._digest_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -385,34 +388,56 @@ class DailyDigestPlugin(Star):
         """兜底检查（每 5 分钟）：错过 08:00（设备休眠/网络中断/cron misfire）时补发"""
         await self._maybe_send_digest()
 
-    async def _maybe_send_digest(self) -> None:
-        """每天最多发送一次：到达发送时间且在补发窗口内则生成并发送，成功后记录已发日期。"""
+    async def _maybe_send_digest(self, force: bool = False) -> None:
+        """每天最多发送一次：到达发送时间且在补发窗口内则生成并发送，成功后记录已发日期。
+
+        force=True 时忽略「今天已发」与时间窗（供手动 /每日简报 使用）。
+
+        并发防护分两层（缺一不可）：
+        1. ``self._digest_lock``：08:00 定时任务与每 5 分钟兜底检查会**同时**触发，
+           生成一份简报要 1~2 分钟，旧的「先读 KV 再写回」会让两个协程都通过检查，
+           实测就是早上收到两遍简报。锁内二次读 KV 才能真正挡掉第二个。
+        2. **先占位再生成**：进锁后立刻把今天的日期写进 KV，异常时清空回滚。
+           这样即使进程在生成途中被重启，也不会在同一天重复发送。
+        """
         try:
             now = self._now_local()
             today = now.strftime("%Y-%m-%d")
-            try:
-                last = (await self.get_kv_data("last_digest_date", "")) or ""
-            except Exception:
-                last = ""
-            if last == today:
-                return
-            start_h, start_m = self._send_window_start()
-            deadline_h, deadline_m = self._send_deadline()
-            now_min = now.hour * 60 + now.minute
-            if now_min < start_h * 60 + start_m:
-                return  # 还没到发送时间
-            if now_min > deadline_h * 60 + deadline_m:
-                return  # 超过补发截止时间，今天放弃（避免深夜误发）
-            targets = await self._collect_target_sessions()
-            if not targets:
-                logger.warning("[daily_digest] 没有可推送的会话，跳过本次发送")
-                return
-            await self._generate_and_send(targets)
-            try:
-                await self.put_kv_data("last_digest_date", today)
-            except Exception as e:
-                logger.debug(f"[daily_digest] 记录发送日期失败: {e}")
-            logger.info(f"[daily_digest] 今日简报已发送（{today}）")
+            if not force:
+                start_h, start_m = self._send_window_start()
+                deadline_h, deadline_m = self._send_deadline()
+                now_min = now.hour * 60 + now.minute
+                if now_min < start_h * 60 + start_m:
+                    return  # 还没到发送时间
+                if now_min > deadline_h * 60 + deadline_m:
+                    return  # 超过补发截止时间，今天放弃（避免深夜误发）
+            async with self._digest_lock:
+                if not force:
+                    try:
+                        last = (await self.get_kv_data("last_digest_date", "")) or ""
+                    except Exception:
+                        last = ""
+                    if last == today:
+                        return  # 别的协程刚发完
+                targets = await self._collect_target_sessions()
+                if not targets:
+                    logger.warning("[daily_digest] 没有可推送的会话，跳过本次发送")
+                    return
+                # 原子占位：先写 KV 再生成，避免第二个协程在生成期间挤进来
+                try:
+                    await self.put_kv_data("last_digest_date", today)
+                except Exception as e:
+                    logger.debug(f"[daily_digest] 预占发送日期失败: {e}")
+                try:
+                    await self._generate_and_send(targets)
+                except Exception:
+                    # 生成/发送失败必须回滚，否则今天不会再补发
+                    try:
+                        await self.put_kv_data("last_digest_date", "")
+                    except Exception:
+                        pass
+                    raise
+                logger.info(f"[daily_digest] 今日简报已发送（{today}）")
         except Exception as e:
             logger.error(f"[daily_digest] 定时发送失败: {e}", exc_info=True)
 
