@@ -1,6 +1,6 @@
 # AstrBot 每日简报插件（daily_digest）
 
-一个基于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的每日简报插件：定时抓取**天气**（支持多城市）与**昨日新闻**（国内 / 国际）、**科技 / 医药 / 政策前沿**、**GitHub 日升榜**，由 AI 总结成一份简洁的中文简报，并**自动推送给所有用户**。
+一个基于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的每日简报插件：定时抓取**天气**（支持多城市）与**昨日新闻**（国内 / 国际）、**科技 / AI / 网安 / 医药 / 政策前沿**、**GitHub 日升榜**，由 AI 总结成一份简洁的中文简报，并**自动推送给所有用户**。
 
 > 数据源全部为**免费、免 API Key** 的公开服务（Open-Meteo 天气 API + 公开 RSS 源 + GitHub 趋势 API），插件本身零第三方依赖（仅使用 Python 标准库，AstrBot 自带 apscheduler）。
 
@@ -10,8 +10,11 @@
 - 🚀 **GitHub 日升榜**：近 N 天 star 增长最快的仓库 Top10（免费免 Key **多源降级**：GitHub Search API 优先 → OSS Insight → gitterapp），可配最低 star 过滤
 - 📰 **昨日新闻**：国内 / 国际分板块，自动按「昨日」过滤条目（不足时回退近 24 小时 / 最新）；政策板块按政府官网节奏放宽为最近 N 天
 - 💻 **科技前沿** / 💊 **医药前沿** / 📜 **政策前沿**：各板块可独立开关；**政策板块默认接政府官方网站**（中国政府网最新政策 / 国家发改委新闻发布 / 中国政府网要闻），并放宽时效窗口（默认 30 天，政策不是每天都有）
+- 🤖 **AI 界的新变化**：量子位 + InfoQ 中文，AI 模型 / 产品 / 研究进展；AI 源单日条目偏少，时效窗口放宽为最近 N 天（默认 2 天）
+- 🛡️ **网安漏洞与情报**：FreeBuf + 安全客 + 先知社区，外加 **CISA KEV**（已知被利用漏洞目录）——4 个 RSS/JSON 源任一可用即出板块，窗口默认最近 2 天，KEV 单独放宽到 7 天
 - 🤖 **AI 总结**：调用 AstrBot 当前配置的 LLM 生成结构化简报；AI 不可用时**自动降级**为模板格式
 - 🖼️ **图片 + 存档双份**：默认 `both` 模式，同时发送**一张渲染图片**和**一份 `.md` 文件**（图片便于手机阅读，md 便于保存/检索/二次加工）；渲染前自动剥掉会导致划线错乱的 Markdown 内联标记
+- 🔤 **中文字体自愈**：插件自带一份中文字体，启动与渲染图片前会把它补到 `<data>/font.ttf`（已有字体不覆盖），修复官方精简镜像里没有 CJK 字体导致图片中文全变方框的问题
 - ⏰ **可配置发送时间**：标准 5 段 cron 表达式（默认每天 08:00）
 - 📢 **推送给所有用户**：自动枚举数据库中的全部会话（与 AstrBot 面板「会话管理」同源），也支持手动指定会话 / 订阅退订
 - 🧩 **可自定义**：每个板块的 RSS 源、条目数量、提示词均可配置
@@ -56,6 +59,8 @@ AstrBot/data/plugins/daily_digest/
 | `tech_enabled` | bool | `true` | 是否启用「科技前沿」板块 |
 | `medical_enabled` | bool | `true` | 是否启用「医药前沿」板块 |
 | `policy_enabled` | bool | `true` | 是否启用「政策前沿」板块 |
+| `ai_enabled` | bool | `true` | 是否启用「AI 界的新变化」板块（量子位 + InfoQ 中文） |
+| `security_enabled` | bool | `true` | 是否启用「网安漏洞与情报」板块（FreeBuf + 安全客 + 先知社区 + CISA KEV） |
 | `github_trending_enabled` | bool | `true` | 是否启用「GitHub 日升榜」板块（近 N 天 star 增长最快仓库 Top10） |
 | `github_trending_days` | int | `7` | GitHub 日升榜统计周期（天） |
 | `github_trending_count` | int | `10` | GitHub 日升榜展示仓库数（Top N） |
@@ -67,8 +72,11 @@ AstrBot/data/plugins/daily_digest/
 | `digest_also_send_md` | bool | `true` | 发图片时是否同时补发一份 .md 文件（图片方便手机阅读，md 方便保存/检索/二次加工；`both` 模式始终两份都发，此开关只影响 `image` / `auto`） |
 | `digest_long_threshold` | int | `2000` | `auto` 模式触发转图片/文件的简报长度阈值（字符） |
 | `gov_policy_recent_days` | int | `30` | 政策板块时效窗口（天）。政府官网政策文件不是每天都有，硬卡「昨日」会让政策前沿经常空白，故默认取最近 30 天（其它板块仍严格卡「昨日」） |
+| `ai_recent_days` | int | `2` | 「AI 界的新变化」时效窗口（天）。AI 源单日条目偏少，硬卡「昨日」容易只剩一两条，默认取最近 2 天（填 1 即只取昨日） |
+| `security_recent_days` | int | `2` | 「网安漏洞与情报」RSS 源的时效窗口（天）。网安源更新不规律，默认取最近 2 天；`cisa:kev` 不受此项影响 |
+| `security_kev_days` | int | `7` | CISA KEV 时效窗口（天）。KEV 新增不是每天都有，默认取最近 7 天新收录的漏洞；该源默认 6 小时下载缓存，不会反复拉取 1.8MB 文件 |
 | `target_sessions` | text | 空 | 指定推送会话（unified_msg_origin，每行一个，如 `aiocqhttp:Group:123456789`）；**留空 = 推送给所有用户** |
-| `feeds_cn` / `feeds_intl` / `feeds_tech` / `feeds_medical` / `feeds_policy` | text | 见下 | 各板块数据源，每行一个：**RSS URL**，或内置源 `cctv:频道`（央视，如 `cctv:china` / `cctv:world` / `cctv:news`）、`tencent:hot`（腾讯热榜）、`baidu:hot`（百度热搜）、**`gov:zuixin`（中国政府网最新政策）/ `gov:yaowen`（中国政府网要闻）/ `ndrc:xwfb`（国家发改委新闻发布）** |
+| `feeds_cn` / `feeds_intl` / `feeds_tech` / `feeds_ai` / `feeds_security` / `feeds_medical` / `feeds_policy` | text | 见下 | 各板块数据源，每行一个：**RSS URL**，或内置源 `cctv:频道`（央视，如 `cctv:china` / `cctv:world` / `cctv:news`）、`tencent:hot`（腾讯热榜）、`baidu:hot`（百度热搜）、**`gov:zuixin`（中国政府网最新政策）/ `gov:yaowen`（中国政府网要闻）/ `ndrc:xwfb`（国家发改委新闻发布）**、**`cisa:kev`（CISA 已知被利用漏洞目录 JSON）** |
 | `llm_prompt` | text | 见下 | AI 总结提示词（`{date}` 日期、`{data}` 原始资讯会自动替换） |
 
 ## 📡 默认数据源（全部免费）
@@ -79,6 +87,8 @@ AstrBot/data/plugins/daily_digest/
 | 昨日国内 | 央视新闻国内（`cctv:china`）、腾讯新闻热榜、百度热搜 |
 | 昨日国际 | 央视新闻国际（`cctv:world`）、中国新闻网世界频道、CGTN（原默认的中国日报 `world_rss.xml` 已 404，已替换） |
 | 科技前沿 | IT之家、少数派、爱范儿、极客公园（RSS） |
+| AI 界的新变化 | [量子位](https://www.qbitai.com/feed)、[InfoQ 中文](https://www.infoq.cn/feed)（RSS）；实测不可用：机器之心 `www.jiqizhixin.com/rss`（302 跳 data-service）、`36kr.com/feed`（返回 HTML 不是 RSS） |
+| 网安漏洞与情报 | [FreeBuf](https://www.freebuf.com/feed)、[安全客](https://api.anquanke.com/data/v1/rss)、[先知社区](https://xz.aliyun.com/feed)（RSS）+ **CISA KEV**（`cisa:kev`，「已知被利用漏洞目录」，4 源任一可用即出板块） |
 | 医药前沿 | WHO 新闻、Nature Medicine（英文 RSS） |
 | 政策前沿 | **政府官方网站**：[中国政府网·最新政策](https://www.gov.cn/zhengce/zuixin/)（`gov:zuixin`）、[国家发改委·新闻发布](https://www.ndrc.gov.cn/xwdt/xwfb/)（`ndrc:xwfb`）、[中国政府网·要闻](https://www.gov.cn/)（`gov:yaowen`） |
 | GitHub 日升榜 | [GitHub Search API](https://docs.github.com/rest/search)（官方，新建仓库日升榜优先）→ [gh-proxy.com](https://gh-proxy.com/) 代理镜像 → 全站热门（stars 排序）→ [OSS Insight](https://api.ossinsight.io/v1/trends/repos/) → [gitterapp](https://api.gitterapp.com/repositories/trending)（全部免 Key，6 路降级） |
@@ -92,6 +102,9 @@ AstrBot/data/plugins/daily_digest/
 >
 > **排版说明**：简报渲染为图片前会自动剥掉 `~~删除线~~`、`__下划线__`、`**粗体**`、`*斜体*` 等内联标记，
 > 因为 AstrBot 的图片渲染链路（本地 PIL 渲染器与网络 marked.js 模板）会把 `~~` 画成穿字删除线、把 `__` 重复渲染成下划线。
+>
+> **字体说明**：插件启动会把自带的 `assets/fonts/digest_cjk.ttf` 检查一遍并补到 `<data>/font.ttf`（本地 PIL 渲染器的默认字体路径），**已有字体不覆盖**；
+> 因此官方精简镜像（不含任何 CJK 字体、t2i 网络渲染 503 时回退本地 PIL）下图片里的中文也不会再变成方框。
 
 ## 🎮 指令
 
@@ -122,7 +135,17 @@ AstrBot/data/plugins/daily_digest/
 2. ...
 
 💻 科技前沿
-...
+1. 标题一
+   🔗 https://...
+
+🤖 AI 界的新变化
+1. 标题一
+   🔗 https://...
+
+🛡️ 网安漏洞与情报
+1. CVE-2026-1234：某厂商某产品 —— 某漏洞，可致远程代码执行
+   ⚠️ 已用于勒索软件
+   🔗 https://nvd.nist.gov/vuln/detail/CVE-2026-1234
 ```
 
 ## ❓ 常见问题
@@ -136,12 +159,17 @@ AstrBot/data/plugins/daily_digest/
 - 确认 AstrBot 已配置可用的大语言模型服务商，且 `ai_summary_enabled` 为开启。AI 调用失败会自动降级为模板格式推送。
 
 **Q：某个新闻源抓不到？**
-- 在插件配置中替换对应板块的 `feeds_*` 源（RSS URL 或 `cctv:频道` / `tencent:hot` / `baidu:hot` / `gov:zuixin` / `gov:yaowen` / `ndrc:xwfb`），或更换网络环境（部分境外源需可访问外网）。
+- 在插件配置中替换对应板块的 `feeds_*` 源（RSS URL 或 `cctv:频道` / `tencent:hot` / `baidu:hot` / `gov:zuixin` / `gov:yaowen` / `ndrc:xwfb` / `cisa:kev`），或更换网络环境（部分境外源需可访问外网）。
 
 **Q：政策前沿为什么不是「昨日」的？**
 - 政策板块默认接政府官方网站，而政策文件不是每天发布，因此该板块按 `gov_policy_recent_days`（默认 30 天）取最近政策，而不是严格卡「昨日」——否则该板块绝大多数时候会是空白；
 - 窗口内确实没有新政策时，会退回展示最新几条并在日志记录（`近 N 天无新政策，退回最新 M 条`）；
 - 想改回严格时效，把 `gov_policy_recent_days` 设为 `1` 即可。
+
+**Q：图片里的中文全是方框（□□□）？**
+- 官方精简镜像里没有任何 CJK 字体，而 t2i 网络渲染服务 503/不可用时会回退到本地 PIL 渲染，PIL 找不到中文字体就把汉字画成方框；
+- v1.1.7 起插件自带 `assets/fonts/digest_cjk.ttf`，**启动时**与**渲染图片前**都会检查并补到 `<data>/font.ttf`（本地 PIL 渲染器的默认字体路径），**已有字体不覆盖**；
+- 若仍出现方框：确认插件目录下 `assets/fonts/digest_cjk.ttf` 存在（约 2MB），且 AstrBot 数据目录可写，然后重启 AstrBot。
 
 **Q：图片上的文字被划掉了（有横线穿过）？**
 - 这是 AstrBot 图片渲染链路对 Markdown 内联标记的渲染问题：本地 PIL 渲染器把 `~~x~~` 画成真的删除线，且 `__x__` 被同时注册为粗体和下划线（两条正则相同、未去重）导致重复绘制；

@@ -248,3 +248,48 @@
 ### 🔧 其它
 
 - `metadata.yaml` 版本 → 1.2.2；整合包 `astrbot-plugin-elaina-suite` v1.1.3 同步本版修复。
+
+## v1.2.3（2026-10-25）
+
+> 版本号与整合包 `astrbot-plugin-elaina-suite` v1.1.7 对齐（本仓库此前为 1.2.2，本次顺延到 1.2.3（功能与整合包 v1.1.7 对齐））。
+> 本版改动从整合包移植，两侧语义一致。
+
+### 🐛 问题
+
+- **简报图片全是乱码（中文全渲染成方框 □，英文数字正常）**：AstrBot 的 t2i 先走网络渲染
+  （`t2i.soulter.top` 等），实测连续 `HTTP 503` / 连接超时后回退到**本地 PIL 渲染**；而 AstrBot
+  官方 Docker 镜像里**没有任何 CJK 字体**（容器内 `fc-list :lang=zh` 为空，Debian 13 trixie），
+  PIL 只能用内置位图字体，中文一律画成方框。
+- **缺少「AI」「网安」两个板块**：原只有科技前沿，AI 进展与漏洞情报混在科技源里，经常被漏掉。
+- **放宽时效窗口时当天条目被整体丢弃**：`_filter_yesterday(recent_days>0)` 的窗口末端取的是
+  「今天 0 点」，早上 8 点跑的日报会把**当天 0 点之后发布的所有条目**全过滤掉，放宽窗口等于白放宽。
+
+### ✨ 改动
+
+- **新增板块「🤖 AI 界的新变化」**：默认源量子位 `https://www.qbitai.com/feed` + InfoQ 中文
+  `https://www.infoq.cn/feed`（配置键 `feeds_ai` / 开关 `ai_enabled`），时效 `ai_recent_days`（默认 2 天）。
+- **新增板块「🛡️ 网安漏洞与情报」**：默认源 FreeBuf `https://www.freebuf.com/feed`、安全客
+  `https://api.anquanke.com/data/v1/rss`、先知社区 `https://xz.aliyun.com/feed`，外加 **CISA KEV
+  已知被利用漏洞目录**（`cisa:kev`，配置里的特殊 token）；时效 `security_recent_days`（默认 2 天）。
+  - KEV 单文件约 1.8MB（JSON），因此单独走 `security_kev_days`（默认 7 天，KEV 新增节奏不均匀，
+    卡「昨日」会经常整块空白），并有 **6 小时下载缓存**（缓存的是已解析的全量条目，窗口每次重算）；
+    条目标题为 `CVE-xxxx：厂商 产品 —— 漏洞名`，`knownRansomwareCampaignUse=known` 时摘要追加
+    「⚠️ 已用于勒索软件」，链接指向 NVD 详情页 `https://nvd.nist.gov/vuln/detail/<CVE>`。
+  - KEV 结果走 `prewindowed` 通道，不再被二次时效过滤，只参与合并排序。
+  - 抓取失败只 warning 且返回空列表，绝不拖垮整份日报。
+- **修复放宽窗口末端**：`recent_days>0` 时窗口末端改为 `now + 5 分钟`，当天发布的条目能正常进入板块
+  （政策前沿同样受益）。
+- **中文字体自愈**：插件自带 GB2312 子集字体 `assets/fonts/digest_cjk.ttf`（6763 汉字 + 符号，
+  约 2MB）。启动时与渲染图片前调用 `_ensure_cjk_font()`，目标 `<data>/font.ttf` 缺失才写入
+  （**不覆盖**用户已有字体），写完打日志；字体资源缺失时静默跳过，不影响其它功能。
+- **提示词同步**：`DEFAULT_PROMPT` 与 `_normalize_prompt` 的【强制要求】板块清单都加入新的两块，
+  旧版 `llm_prompt` 配置无需手动改。
+
+### 🔧 其它
+
+- `_conf_schema.json` 29 → 36 键：`ai_enabled` / `security_enabled` / `feeds_ai` / `feeds_security` /
+  `ai_recent_days` / `security_recent_days` / `security_kev_days`（`llm_prompt` 默认值同步）。
+- 新增 `tests/test_digest_v117.py`：板块顺序与默认源、KEV 解析（7 天窗口 / 勒索标记 / NVD 链接 /
+  6 小时缓存 / 窗口收窄重算 / 失败隔离）、`feeds_ai` 与 `feeds_security` 时效窗口、放宽窗口含当天条目、
+  模板渲染新标题、schema 新键、字体自愈（缺失补 / 不覆盖 / 资源缺失静默）。
+- `metadata.yaml` 版本 → 1.1.7。

@@ -49,6 +49,16 @@
     "default": true,
     "description": "是否启用「科技前沿」板块"
   },
+  "ai_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用「AI 界的新变化」板块（量子位 + InfoQ 中文，AI 模型/产品/研究进展）"
+  },
+  "security_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "是否启用「网安漏洞与情报」板块（FreeBuf + 安全客 + 先知社区 + CISA KEV 已知被利用漏洞）"
+  },
   "medical_enabled": {
     "type": "bool",
     "default": true,
@@ -124,6 +134,16 @@
     "default": "https://www.ithome.com/rss/\nhttps://sspai.com/feed\nhttps://www.ifanr.com/feed\nhttps://www.geekpark.net/rss",
     "description": "科技前沿源（每行一个 RSS URL）"
   },
+  "feeds_ai": {
+    "type": "text",
+    "default": "https://www.qbitai.com/feed\nhttps://www.infoq.cn/feed",
+    "description": "AI 界的新变化源（每行一个 RSS URL，默认量子位 + InfoQ 中文）。实测不可用：机器之心 www.jiqizhixin.com/rss（302 跳 data-service）、36kr.com/feed（返回 HTML 不是 RSS）"
+  },
+  "feeds_security": {
+    "type": "text",
+    "default": "https://www.freebuf.com/feed\nhttps://api.anquanke.com/data/v1/rss\nhttps://xz.aliyun.com/feed\ncisa:kev",
+    "description": "网安漏洞与情报源（每行一个：RSS/Atom URL，或 cisa:kev=CISA 已知被利用漏洞目录 JSON）。实测不可用：www.secrss.com/rss（404）、paper.seebug.org 需用 https://paper.seebug.org/rss（非 /rss/）"
+  },
   "feeds_medical": {
     "type": "text",
     "default": "https://www.who.int/rss-feeds/news-english.xml\nhttps://www.nature.com/nm.rss",
@@ -139,9 +159,24 @@
     "default": 30,
     "description": "政策板块的时效窗口（天）：政府官网政策文件不是每天都发，硬卡「昨日」会导致政策前沿经常空白，因此默认取最近 30 天内的政策（其它板块仍严格卡「昨日」）"
   },
+  "ai_recent_days": {
+    "type": "int",
+    "default": 2,
+    "description": "AI 界的新变化的时效窗口（天）。AI 资讯源单日条目数偏少，硬卡「昨日」容易只剩一两条，放宽为「最近 N 天」（默认 2，填 1 即只取昨日）"
+  },
+  "security_recent_days": {
+    "type": "int",
+    "default": 2,
+    "description": "网安漏洞与情报的时效窗口（天）。网安源更新不规律，硬卡「昨日」容易整块空白，放宽为「最近 N 天」（默认 2，填 1 即只取昨日）；只作用于 RSS 源，cisa:kev 走 security_kev_days"
+  },
+  "security_kev_days": {
+    "type": "int",
+    "default": 7,
+    "description": "CISA KEV（已知被利用漏洞目录）的时效窗口（天）。KEV 新增不是每天都有，卡「昨日」会经常整块空，默认取最近 7 天新收录的漏洞；该源有 6 小时下载缓存，不会反复拉取 1.8MB 文件"
+  },
   "llm_prompt": {
     "type": "text",
-    "default": "你是一名严谨、简洁的中文每日简报编辑。今天是 {date}。请根据下面的原始资讯生成【每日简报】，要求：\n1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（有数据的板块必须全部输出，不要遗漏任何板块）\n2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接\n3. 🚀 GitHub 日升榜的每个仓库要结合给出的描述，用一句话说明它「是什么、有什么功能」（如：XX —— 一个用于……的开源项目）\n4. 客观简洁、不夸张、不编造；总长度控制在 1800 字内\n原始资讯：\n{data}",
+    "default": "你是一名严谨、简洁的中文每日简报编辑。今天是 {date}。请根据下面的原始资讯生成【每日简报】，要求：\n1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、🤖 AI 界的新变化、🛡️ 网安漏洞与情报、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（有数据的板块必须全部输出，不要遗漏任何板块）\n2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接\n3. 🚀 GitHub 日升榜的每个仓库要结合给出的描述，用一句话说明它「是什么、有什么功能」（如：XX —— 一个用于……的开源项目）\n4. 客观简洁、不夸张、不编造；总长度控制在 1800 字内\n原始资讯：\n{data}",
     "description": "AI 总结提示词（{date} 为日期，{data} 为抓取到的原始资讯；旧版「1200 字内」限制会自动升级为 1800 字并强制输出所有板块）"
   }
 }

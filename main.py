@@ -54,6 +54,29 @@ GOV_HEADERS = {
     "Referer": "https://www.gov.cn/",
 }
 
+# 网安板块：CISA KEV（Known Exploited Vulnerabilities，已知被利用漏洞目录）
+#   cisa:kev -> https://www.cisa.gov/.../known_exploited_vulnerabilities.json
+# 结构：{"title": ..., "vulnerabilities": [{cveID, vendorProject, product,
+#        vulnerabilityName, dateAdded, shortDescription, knownRansomwareCampaignUse, ...}]}
+# 说明：KEV 是「已被实锤在野利用」的漏洞清单，收录节奏不均匀（有时几天没有新增），
+#      且单文件约 1.8MB，所以两条特殊处理：窗口放宽到 security_kev_days 天 + 6 小时下载缓存。
+KEV_SOURCES = ("cisa:kev",)
+
+CISA_KEV_URL = (
+    "https://www.cisa.gov/sites/default/files/feeds/"
+    "known_exploited_vulnerabilities.json"
+)
+
+# 复用 gov 那套「带 Referer 的 JSON 请求头」风格，避免被 CISA 前置 WAF 当爬虫挡掉
+CISA_HEADERS = {
+    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept-Language": "en-US,en;q=0.9,zh-CN;q=0.8",
+    "Referer": "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+}
+
+# KEV 下载缓存时长（秒）：1.8MB 的文件不该一天拉两次
+KEV_CACHE_TTL_SECONDS = 6 * 3600
+
 # WMO 天气代码 -> 中文描述（Open-Meteo）
 WMO_CODES = {
     0: "晴", 1: "基本晴朗", 2: "多云", 3: "阴",
@@ -95,6 +118,21 @@ DEFAULT_FEEDS = {
         "https://www.ifanr.com/feed",
         "https://www.geekpark.net/rss",
     ],
+    # AI 板块：量子位（更新频繁）+ InfoQ 中文（含 AI 栏目）
+    # 实测不可用：机器之心 www.jiqizhixin.com/rss -> 302 跳 data-service；
+    #             36kr.com/feed -> 返回 HTML 而不是 RSS
+    "feeds_ai": [
+        "https://www.qbitai.com/feed",
+        "https://www.infoq.cn/feed",
+    ],
+    # 网安板块：FreeBuf + 安全客 + 先知社区（Atom）+ CISA KEV（结构化漏洞目录）
+    # 实测不可用：www.secrss.com/rss -> 404；paper.seebug.org 需用 /rss（非 /rss/）
+    "feeds_security": [
+        "https://www.freebuf.com/feed",
+        "https://api.anquanke.com/data/v1/rss",
+        "https://xz.aliyun.com/feed",
+        "cisa:kev",
+    ],
     "feeds_medical": [
         "https://www.who.int/rss-feeds/news-english.xml",
         "https://www.nature.com/nm.rss",
@@ -111,6 +149,8 @@ SECTIONS = [
     ("news_cn_enabled", "feeds_cn", "昨日国内", "🇨🇳"),
     ("news_intl_enabled", "feeds_intl", "昨日国际", "🌍"),
     ("tech_enabled", "feeds_tech", "科技前沿", "💻"),
+    ("ai_enabled", "feeds_ai", "AI 界的新变化", "🤖"),
+    ("security_enabled", "feeds_security", "网安漏洞与情报", "🛡️"),
     ("medical_enabled", "feeds_medical", "医药前沿", "💊"),
     ("policy_enabled", "feeds_policy", "政策前沿", "📜"),
     ("github_trending_enabled", "github_trending", "GitHub 日升榜", "🚀"),
@@ -136,7 +176,7 @@ WEATHER_DAILY_CALL_LIMIT = 120
 
 DEFAULT_PROMPT = """你是一名严谨、简洁的中文每日简报编辑。今天是 {date}。
 请根据下面的原始资讯生成【每日简报】，要求：
-1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（有数据的板块必须全部输出，不要遗漏任何板块）
+1. 按板块输出：🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、🤖 AI 界的新变化、🛡️ 网安漏洞与情报、💊 医药前沿、📜 政策前沿、🚀 GitHub 日升榜（有数据的板块必须全部输出，不要遗漏任何板块）
 2. 每个板块先用 1-2 句话概括，再列 3-5 条要点（标题 + 一句话说明），重要条目附原文链接
 3. 🚀 GitHub 日升榜的每个仓库要结合给出的描述，用一句话说明它「是什么、有什么功能」（如：XX —— 一个用于……的开源项目，提供……能力）
 4. 客观简洁、不夸张、不编造；总长度控制在 1800 字内
@@ -181,6 +221,67 @@ def _sanitize_for_image(text: str) -> str:
     # 单下划线斜体：_文字_ -> 文字
     text = re.sub(r"(?<![A-Za-z0-9_])_(.+?)_(?![A-Za-z0-9_])", r"\1", text)
     return text
+
+
+# ---------------------------------------------------------------------------
+# 中文字体自愈
+# ---------------------------------------------------------------------------
+# 背景：AstrBot 的 t2i 先走网络渲染（t2i.soulter.top 等），失败/503 时回退到
+# 本地 PIL 渲染。而 AstrBot 官方 Docker 镜像里**没有任何 CJK 字体**
+# （fc-list :lang=zh 为空），PIL 只能用内置位图字体，中文全部渲染成方框
+# （□），表现为「简报图片全是乱码、英文数字正常」。
+# AstrBot 的 FontManager.get_font() 会**优先加载 <data>/font.ttf**，因此这里
+# 自带一份 GB2312 子集字体（约 2MB），缺失时补到 data 目录即可，无外部依赖。
+# 已存在则不动 —— 尊重用户自己放的字体。
+CJK_FONT_ASSET = os.path.join("assets", "fonts", "digest_cjk.ttf")
+
+
+def _plugin_data_dir() -> str | None:
+    """从插件目录反推 AstrBot data 目录：<data>/plugins/<plugin> -> <data>。"""
+    try:
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        data_dir = os.path.dirname(os.path.dirname(plugin_dir))
+        if os.path.isdir(os.path.abspath(plugin_dir)):
+            return data_dir
+    except Exception:
+        pass
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_data_path
+
+        return str(get_astrbot_data_path())
+    except Exception:
+        return None
+
+
+def _ensure_cjk_font() -> str | None:
+    """确保本地 t2i 渲染器有中文字体可用；返回字体路径（失败返回 None）。
+
+    只在目标字体缺失时写入，不覆盖用户已有字体；任何异常都只 warning 不抛。
+    """
+    try:
+        data_dir = _plugin_data_dir()
+        if not data_dir:
+            return None
+        target = os.path.join(data_dir, "font.ttf")
+        if os.path.exists(target):
+            return target
+        plugin_dir = os.path.dirname(os.path.abspath(__file__))
+        src = os.path.join(plugin_dir, CJK_FONT_ASSET)
+        if not os.path.exists(src):
+            logger.warning("[font] 自带中文字体缺失，图片中文可能显示为方框: %s", src)
+            return None
+        os.makedirs(data_dir, exist_ok=True)
+        tmp = target + ".part"
+        with open(src, "rb") as fsrc:
+            data = fsrc.read()
+        with open(tmp, "wb") as fdst:
+            fdst.write(data)
+        os.replace(tmp, target)
+        logger.info(f"[font] 已补充中文字体到 {target}（{len(data)} 字节），修复图片中文乱码")
+        return target
+    except Exception as e:
+        logger.warning(f"[font] 补充中文字体失败（图片中文可能乱码）: {e}")
+        return None
 
 
 def _image_chain(render_result) -> "MessageChain":
@@ -243,6 +344,10 @@ class DailyDigestPlugin(Star):
         # 发送防重：08:00 定时任务与 5 分钟兜底检查会同时触发，
         # 生成一份简报要 1~2 分钟，旧写法两个协程都会通过「今天没发过」的检查 -> 一天发两遍
         self._digest_lock = asyncio.Lock()
+        # CISA KEV 下载缓存：(下载时间戳, 解析后的条目列表)；6 小时内不重复下载 1.8MB
+        self._kev_cache: tuple[float, list[dict]] | None = None
+        # 启动就补齐中文字体：图片渲染走本地 PIL 时全靠它（官方镜像无 CJK 字体）
+        _ensure_cjk_font()
 
     # ------------------------------------------------------------------ #
     # 生命周期
@@ -538,6 +643,8 @@ class DailyDigestPlugin(Star):
         避免日报因图片上传失败而整体丢失。"""
         try:
             render_text = _sanitize_for_image(text)
+            # 网络 t2i 偶发 503 会回退本地 PIL；没有中文字体时中文会变方框
+            _ensure_cjk_font()
             url = await self.text_to_image(render_text, return_url=True)
             if not url:
                 logger.warning("[daily_digest] 简报渲染图片返回空")
@@ -709,14 +816,19 @@ class DailyDigestPlugin(Star):
     # ------------------------------------------------------------------ #
     async def _fetch_category(self, feed_key: str, max_items: int) -> list[dict]:
         items: list[dict] = []
+        prewindowed: list[dict] = []
         for entry in self._feed_urls(feed_key):
             for attempt in (1, 2):  # 抖动网络重试一次
                 try:
                     if self._is_json_source(entry):
-                        items.extend(await self._fetch_json_source(entry, max_items))
+                        got = await self._fetch_json_source(entry, max_items)
                     else:
                         data = await asyncio.to_thread(self._http_get_bytes, entry)
-                        items.extend(self._parse_feed(data))
+                        got = self._parse_feed(data)
+                    if entry in KEV_SOURCES:
+                        prewindowed.extend(got)
+                    else:
+                        items.extend(got)
                     break
                 except Exception as e:
                     if attempt == 1:
@@ -729,10 +841,24 @@ class DailyDigestPlugin(Star):
                         )
         # 政策板块来自政府官网，发文频率低（可能数日才有一条），
         # 因此放宽时效窗口，避免「政策前沿」整块空白；其余板块仍严格卡「昨日」。
+        # AI / 网安板块作为新增板块，单日条目数偏少（尤其网安源更新不规律），
+        # 单独放宽到 ai_recent_days / security_recent_days（默认 2 天），仍走同一套过滤。
         recent_days = 0
         if feed_key == "feeds_policy":
             recent_days = max(1, self._cfg_int("gov_policy_recent_days", 30))
-        return self._filter_yesterday(items, recent_days)[:max_items]
+        elif feed_key == "feeds_ai":
+            recent_days = max(1, self._cfg_int("ai_recent_days", 2))
+        elif feed_key == "feeds_security":
+            recent_days = max(1, self._cfg_int("security_recent_days", 2))
+        merged = self._filter_yesterday(items, recent_days)
+        if prewindowed:
+            # cisa:kev 在抓取器里已按 security_kev_days 过滤（KEV 收录当天也要能显示），
+            # 再卡一次「近 2 天」会把 7 天窗口缩成 2 天，所以这里只做合并排序。
+            now = datetime.now().astimezone()
+            epoch = datetime.min.replace(tzinfo=now.tzinfo)
+            merged = merged + prewindowed
+            merged.sort(key=lambda it: it.get("pub_date") or epoch, reverse=True)
+        return merged[:max_items]
 
     @staticmethod
     def _is_json_source(entry: str) -> bool:
@@ -740,15 +866,18 @@ class DailyDigestPlugin(Star):
             entry.startswith("cctv:")
             or entry in ("tencent:hot", "baidu:hot")
             or entry in GOV_SOURCES
+            or entry in KEV_SOURCES
         )
 
     async def _fetch_json_source(self, token: str, max_items: int) -> list[dict]:
-        """抓取免费中文 JSON 新闻源（央视 / 腾讯热榜 / 百度热搜 / 政府官网）。
+        """抓取免费中文 JSON 新闻源（央视 / 腾讯热榜 / 百度热搜 / 政府官网 / CISA KEV）。
         热榜类条目按「最新」处理（pub_date=当前时间），通过时效过滤；
         政府官网条目带真实发布日期，按真实日期参与时效过滤。"""
         now = datetime.now().astimezone()
         if token in GOV_SOURCES:
             return await self._fetch_gov_source(token, max_items)
+        if token in KEV_SOURCES:
+            return await self._fetch_cisa_kev(max_items)
         if token.startswith("cctv:"):
             channel = token.split(":", 1)[1].strip() or "news"
             url = (
@@ -926,6 +1055,81 @@ class DailyDigestPlugin(Star):
                     f"[daily_digest] {token} 近 {days} 天无新政策，退回最新 {len(recent)} 条"
                 )
         return recent[: max(1, max_items * 3)]
+
+    async def _fetch_cisa_kev(self, max_items: int) -> list[dict]:
+        """CISA KEV（Known Exploited Vulnerabilities，已知被利用漏洞目录）。
+
+        - 数据：known_exploited_vulnerabilities.json（约 1.8MB，结构见 CISA_KEV_URL 注释）
+        - 窗口：不做「昨日」硬过滤。KEV 收录的是「已被实锤在野利用」的漏洞，
+          新增节奏不均匀（常有几天没新增），卡昨日会经常整块空白，
+          因此按 dateAdded 取「最近 security_kev_days 天」（默认 7）。
+        - 缓存：单次下载后 6 小时内复用（1.8MB 不必每次日报都拉），
+          缓存的是「已解析的全部条目」，窗口过滤在每次调用时按最新配置重算。
+        - 失败隔离：任何异常都只 warning + 返回空列表，绝不拖垮整份日报。
+        """
+        days = max(1, self._cfg_int("security_kev_days", 7))
+        now = datetime.now().astimezone()
+
+        cache = getattr(self, "_kev_cache", None)
+        if cache and time.time() - cache[0] < KEV_CACHE_TTL_SECONDS:
+            parsed = list(cache[1])
+        else:
+            try:
+                raw = await asyncio.to_thread(
+                    self._http_get_bytes, CISA_KEV_URL, 30, CISA_HEADERS
+                )
+                payload = json.loads(raw.decode("utf-8", "replace"))
+            except Exception as e:
+                logger.warning(f"[daily_digest] CISA KEV 抓取失败: {e}")
+                return []
+            vulns = payload.get("vulnerabilities") if isinstance(payload, dict) else None
+            if not isinstance(vulns, list):
+                logger.warning("[daily_digest] CISA KEV 返回结构异常，缺少 vulnerabilities 列表")
+                return []
+            parsed = []
+            for it in vulns:
+                if not isinstance(it, dict):
+                    continue
+                cve = str(it.get("cveID") or "").strip()
+                if not cve:
+                    continue
+                pub = _parse_date(str(it.get("dateAdded") or ""))
+                if pub is None:
+                    continue
+                if pub.tzinfo is None:
+                    pub = pub.replace(tzinfo=now.tzinfo)
+                vendor = _strip_html(str(it.get("vendorProject") or "")).strip()
+                product = _strip_html(str(it.get("product") or "")).strip()
+                name = _strip_html(str(it.get("vulnerabilityName") or "")).strip()
+                subject = " ".join(p for p in (vendor, product) if p)
+                title = f"{cve}：{subject} —— {name}" if subject else f"{cve}：{name}"
+                summary = _strip_html(str(it.get("shortDescription") or ""))[:80]
+                if str(it.get("knownRansomwareCampaignUse") or "").strip().lower() == "known":
+                    summary = (summary + " ⚠️ 已用于勒索软件").strip()
+                link = f"https://nvd.nist.gov/vuln/detail/{cve}"
+                parsed.append(
+                    {
+                        "title": title,
+                        "link": link,
+                        "url": link,
+                        "pub_date": pub,
+                        "summary": summary,
+                        "source": "CISA KEV",
+                    }
+                )
+            self._kev_cache = (time.time(), parsed)
+
+        cutoff = now - timedelta(days=days)
+        hit = [
+            it
+            for it in parsed
+            if it.get("pub_date") is not None and cutoff <= it["pub_date"] <= now
+        ]
+        hit.sort(key=lambda it: it["pub_date"], reverse=True)
+        logger.info(
+            f"[daily_digest] CISA KEV 近 {days} 天新增 {len(hit)} 条（全库 {len(parsed)} 条）"
+        )
+        return hit[: max(1, max_items * 3)]
 
     @staticmethod
     def _walk_keyed_items(node):
@@ -1142,15 +1346,21 @@ class DailyDigestPlugin(Star):
 
     def _filter_yesterday(self, items: list[dict], recent_days: int = 0) -> list[dict]:
         """严格时效过滤：只保留「昨日」条目；不足时回退到近 24 小时。
-        recent_days > 0 时（政策等低频板块）放宽为「最近 N 天」，因为政策文件
-        不是每天都有，硬卡「昨日」会让整个板块经常空白。
+        recent_days > 0 时（政策/AI/网安等低频板块）放宽为「最近 N 天」，
+        因为政策文件不是每天都有、AI 与网安源更新不规律，硬卡「昨日」会让
+        整个板块经常空白；此时窗口末端取「现在」，当天新发的条目也算在内。
         注意：不回退到更早的条目——死源（如停更的 RSS）不会把陈旧内容当「昨日」展示。"""
         now = datetime.now().astimezone()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         yesterday_start = today_start - timedelta(days=1)
         cutoff_24h = now - timedelta(hours=24)
+        # 放宽窗口时窗口末端必须是「现在」而不是今天 0 点：AI / 网安这类板块的
+        # 新闻当天就发，若末端卡在今天 0 点，早上 8 点跑的日报会把当天所有条目
+        # 全部丢掉（只剩昨天以前），板块看起来像「没新闻」。
+        window_end = today_start
         if recent_days > 0:
             yesterday_start = now - timedelta(days=recent_days)
+            window_end = now + timedelta(minutes=5)
 
         dated: list[dict] = []
         undated: list[dict] = []
@@ -1165,7 +1375,7 @@ class DailyDigestPlugin(Star):
             dated.append(it)
         dated.sort(key=lambda x: x["pub_date"], reverse=True)
 
-        hit = [it for it in dated if yesterday_start <= it["pub_date"] < today_start]
+        hit = [it for it in dated if yesterday_start <= it["pub_date"] < window_end]
         if recent_days <= 0 and len(hit) < 2:
             hit24 = [it for it in dated if it["pub_date"] >= cutoff_24h]
             if len(hit24) > len(hit):
@@ -1440,7 +1650,8 @@ class DailyDigestPlugin(Star):
         )
         p = p.rstrip() + (
             "\n\n【强制要求】下方 {data} 中出现的每一个板块（包括但不限于："
-            "🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、💊 医药前沿、"
+            "🌤️ 天气、🇨🇳 昨日国内、🌍 昨日国际、💻 科技前沿、"
+            "🤖 AI 界的新变化、🛡️ 网安漏洞与情报、💊 医药前沿、"
             "📜 政策前沿、🚀 GitHub 日升榜）都必须输出；只有某个板块在 {data} 中完全无数据时才可跳过。"
         )
         return p
