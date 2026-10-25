@@ -359,17 +359,27 @@ async def main() -> None:
     # 9) 交付物：metadata 版本 / CHANGELOG 条目 / 字体文件
     # ---------------------------------------------------------------- #
     meta = open(os.path.join(_ROOT, "metadata.yaml"), encoding="utf-8").read()
-    assert "\nversion: 1.2.3" in meta, meta[:400]
+    assert "\nversion: 1.2.4" in meta, meta[:400]
     changelog = open(os.path.join(_ROOT, "CHANGELOG.md"), encoding="utf-8").read()
-    assert "## v1.2.3" in changelog, "CHANGELOG 缺 v1.2.3 段落"
-    assert changelog.rstrip().rindex("## v1.2.3") > len(changelog) // 2, "v1.2.3 应追加在文件末尾附近"
+    assert "## v1.2.4" in changelog, "CHANGELOG 缺 v1.2.3 段落"
+    assert changelog.rstrip().rindex("## v1.2.4") > len(changelog) // 2, "v1.2.3 应追加在文件末尾附近"
     assert "CISA KEV" in changelog
     assert os.path.getsize(os.path.join(_ROOT, "assets", "fonts", "digest_cjk.ttf")) == 2104208
-    print("[9] metadata 1.2.3 / CHANGELOG 末尾 v1.2.3 / 字体 2104208 字节 OK")
+    print("[9] metadata 1.2.4 / CHANGELOG 末尾 v1.2.4 / 字体 2104208 字节 OK")
+
+    # 10) 图片文本剔除 emoji（本地字体无 emoji 字形，留着会画方框）
+    clean = mod._sanitize_for_image("🤖 AI 界的新变化 ✅ 抓取成功 🛡️ 网安 ⏳ 等待 ⭐ 精选")
+    codes = [ord(c) for c in clean]
+    assert not [c for c in codes if c >= 0x1F000], clean
+    assert 0xFE0F not in codes and 0x200D not in codes, clean
+    assert 0x2705 not in codes and 0x23F3 not in codes and 0x2B50 not in codes, clean
+    for keep in ("AI 界的新变化", "抓取成功", "网安", "精选"):
+        assert keep in clean, (keep, clean)
+    print("[10] 图片文本剔除 emoji（保留正文）OK")
 
     assert hasattr(dd, "_digest_lock")
     assert hasattr(dd, "_kev_cache"), "实例上应有 _kev_cache（6 小时下载缓存）"
-    print("\n全部 9 组测试通过 ✅")
+    print("\n全部 10 组测试通过 ✅")
 
 
 if __name__ == "__main__":

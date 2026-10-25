@@ -197,6 +197,18 @@ def _strip_html(text: str) -> str:
     return html.unescape(re.sub(r"\s+", " ", text)).strip()
 
 
+_IMAGE_EMOJI_RE = re.compile(
+    "["
+    "🀀-🫿"   # 大多数 emoji（含 🚀🤖💻💊🌤）
+    "🇦-🇿"   # 区域旗帜
+    "‍️"            # ZWJ / 变体选择符
+    "☀-➿"           # ☀✅❌ 等杂项符号
+    "⬀-⯿"           # ⭐ 等
+    "⌀-⏿"           # ⏳⏱ 等
+    "]"
+)
+
+
 def _sanitize_for_image(text: str) -> str:
     """净化用于 t2i 渲染的文本，去掉会导致「划线」的内联 markdown 标记。
 
@@ -220,6 +232,11 @@ def _sanitize_for_image(text: str) -> str:
     text = re.sub(r"\*(.+?)\*", r"\1", text)
     # 单下划线斜体：_文字_ -> 文字
     text = re.sub(r"(?<![A-Za-z0-9_])_(.+?)_(?![A-Za-z0-9_])", r"\1", text)
+    # emoji：本地兜底字体（GB2312 子集）不含 emoji 字形，会画成方框 □。
+    # 简报里的 emoji 只是板块装饰（标题里已有文字），直接去掉最稳；
+    # 网络渲染路径一并去掉，保证两条路径观感一致。.md 文件不受影响。
+    text = _IMAGE_EMOJI_RE.sub("", text)
+    text = re.sub(r"[ 	]{2,}", " ", text)
     return text
 
 
